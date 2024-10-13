@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  logger-api:
+    build:
+      context: ./loggerAPI  # The path where the Dockerfile and source code for LoggerApi are located
+    ports:
+      - "8081:8080"
+    depends_on:
+        rabbitmq:
+          condition: service_healthy  # Wait until RabbitMQ is healthy
+        postgres:
+          condition: service_healthy  # Wait until PostgreSQL is healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/logs_db
+      SPRING_DATASOURCE_USERNAME: log_user
+      SPRING_DATASOURCE_PASSWORD: log_password
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"  # RabbitMQ management UI
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  logger:
+    build:
+      context: ./Logger  # Assuming your Spring Boot Dockerfile is in the spring-boot-app directory
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - rabbitmq
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/logs_db
+      - SPRING_DATASOURCE_USERNAME=log_user
+      - SPRING_DATASOURCE_PASSWORD=log_password
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+
+  postgres:
+      image: postgres:13
+      environment:
+        POSTGRES_DB: logs_db
+        POSTGRES_USER: log_user
+        POSTGRES_PASSWORD: log_password
+      ports:
+        - "5432:5432"
+      volumes:
+        - pgdata:/var/lib/postgresql/data
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U log_user -d logs_db"]
+        interval: 10s        # Check every 10 seconds
+        timeout: 5s          # Wait 5 seconds for the result
+        retries: 5           # Retry up to 5 times before reporting unhealthy
+        start_period: 30s    # Wait 30 seconds before starting health checks
+
+volumes:
+  rabbitmq-data:
+  pgdata:
