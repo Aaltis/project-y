@@ -18,17 +18,21 @@ COPY . /app
 RUN ./gradlew bootJar --no-daemon
 
 # Step 2: Use the official OpenJDK image to run the application
+#FROM openjdk:17-jdk-slim
+
+
 FROM openjdk:17-jdk-alpine
 RUN apk --no-cache add curl
+
 
 # Set the working directory in the container
 WORKDIR /app
 
 # Copy the JAR from the build stage
-COPY --from=build /app/build/libs/Logger-0.0.1-SNAPSHOT.jar /app/Logger-0.0.1-SNAPSHOT.jar
+COPY --from=build /app/build/libs/LoggerMessageQueueApi-0.0.1-SNAPSHOT.jar /app/LoggerMessageQueueApi-0.0.1-SNAPSHOT.jar
 
 # Expose port 8080 (default for Spring Boot)
 EXPOSE 8080
 
 # Run the Spring Boot application
-ENTRYPOINT ["java", "-jar", "/app/Logger-0.0.1-SNAPSHOT.jar"]
+ENTRYPOINT ["java", "-jar", "/app/LoggerMessageQueueApi-0.0.1-SNAPSHOT.jar"]

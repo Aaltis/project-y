@@ -22,11 +22,9 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'              // REST APIs support
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'         // JPA for database interaction
     implementation 'org.postgresql:postgresql'                                     // PostgreSQL JDBC driver
-    
     testImplementation 'org.springframework.boot:spring-boot-starter-test'         // Testing support, including JUnit and MockMvc
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'                   // Optional for some JUnit features
 }
-
 
 tasks.named('bootJar') {
     mainClass.set('fi.breakwaterworks.LoggerApplication')  // Specify your main class

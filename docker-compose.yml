@@ -1,28 +1,65 @@
 version: '3.8'
 
 services:
-  logger-api:
+  loadbalancer:
+    container_name: loadbalancer  # This should be the name you want to use in other services
     build:
-      context: ./loggerAPI  # The path where the Dockerfile and source code for LoggerApi are located
+      context: ./LoadBalancer  # The path where the Dockerfile for Eureka Server is located
+    env_file:
+      - .env  # Load environment variables from .env file
+    ports:
+      - "8761:8761"  # Expose Eureka Server on port 8761
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8761/actuator/health || exit 1"]  # Health check command
+      interval: 30s  # Check every 30 seconds
+      timeout: 10s   # Wait up to 10 seconds for a response
+      retries: 3     # Retry up to 3 times before marking the service as unhealthy
+      start_period: 30s  # Wait 30 seconds before starting health checks
+    networks:
+      - spring-net
+
+  logger-message-queue-api:
+    container_name: logger-message-queue-api  # This should be the name you want to use in other services
+    build:
+      context: ./LoggerMessageQueueApi
+    env_file:
+      - .env  # Load environment variables from .env file
     ports:
       - "8081:8080"
     depends_on:
-        rabbitmq:
-          condition: service_healthy  # Wait until RabbitMQ is healthy
-        postgres:
-          condition: service_healthy  # Wait until PostgreSQL is healthy
+      loadbalancer:
+        condition: service_healthy  # Wait until Eureka Server is healthy
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/logs_db
-      SPRING_DATASOURCE_USERNAME: log_user
-      SPRING_DATASOURCE_PASSWORD: log_password
-      SPRING_RABBITMQ_HOST: rabbitmq
-      SPRING_RABBITMQ_PORT: 5672
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_SERVER_URL}  # Register with Eureka
+    networks:
+      - spring-net
+
+  api-gateway:
+    container_name: api-gateway  # This should be the name you want to use in other services
+    build:
+      context: ./Gateway
+    env_file:
+      - .env  # Load environment variables from .env file
+    ports:
+      - "8080:8080"
+    depends_on:
+      - loadbalancer
+      - logger-message-queue-api
+      - logger
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_SERVER_URL}  # Register with Eureka
+    networks:
+      - spring-net
 
   rabbitmq:
     image: rabbitmq:3-management
     ports:
       - "5672:5672"
-      - "15672:15672"  # RabbitMQ management UI
+      - "15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -30,39 +67,103 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    networks:
+      - spring-net
 
   logger:
+    container_name: logger  # This should be the name you want to use in other services
     build:
-      context: ./Logger  # Assuming your Spring Boot Dockerfile is in the spring-boot-app directory
-      dockerfile: Dockerfile
+      context: ./Logger
+    env_file:
+      - .env  # Load environment variables from .env file
     ports:
-      - "8080:8080"
+      - "8082:8080"
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
     environment:
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/logs_db
-      - SPRING_DATASOURCE_USERNAME=log_user
-      - SPRING_DATASOURCE_PASSWORD=log_password
-      - SPRING_RABBITMQ_HOST=rabbitmq
-      - SPRING_RABBITMQ_PORT=5672
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_SERVER_URL}  # Register with Eureka
+      SPRING_RABBITMQ_HOST: ${RABBIT_MQ_HOST}
+      SPRING_RABBITMQ_PORT: ${RABBIT_MQ_PORT}
+      SPRING_RABBITMQ_USERNAME: ${RABBIT_MQ_USER}
+      SPRING_RABBITMQ_PASSWORD: ${RABBIT_MQ_PASSWORD}
+      DATABASE_HOST: ${DATABASE_HOST}
+      DATABASE_NAME: ${DATABASE_NAME}
+      DATABASE_USER: ${DATABASE_USER}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+    networks:
+      - spring-net
+
+  notes:
+    container_name: notes  # This should be the name you want to use in other services
+    build:
+      context: ./Notes
+    env_file:
+      - .env  # Load environment variables from .env file
+    ports:
+      - "8083:8080"
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_SERVER_URL}  # Register with Eureka
+    networks:
+      - spring-net
 
   postgres:
-      image: postgres:13
-      environment:
-        POSTGRES_DB: logs_db
-        POSTGRES_USER: log_user
-        POSTGRES_PASSWORD: log_password
-      ports:
-        - "5432:5432"
-      volumes:
-        - pgdata:/var/lib/postgresql/data
-      healthcheck:
-        test: ["CMD-SHELL", "pg_isready -U log_user -d logs_db"]
-        interval: 10s        # Check every 10 seconds
-        timeout: 5s          # Wait 5 seconds for the result
-        retries: 5           # Retry up to 5 times before reporting unhealthy
-        start_period: 30s    # Wait 30 seconds before starting health checks
+    container_name: postgres  # This should be the name you want to use in other services
+    image: postgres:13
+    env_file:
+      - .env  # Load environment variables from .env file
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME}
+      DATABASE_USER: ${DATABASE_USER}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U log_user -d logs_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - spring-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres-keycloak
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: password
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    command: ["start-dev"]
+    depends_on:
+      - postgres-keycloak
+    volumes:
+      - "D:\\Antti\\Code\\project y\\keycloak-realm.json:/config/keycloak-realm.json"  # Use Windows-style absolute path
+    ports:
+      - "8090:8080"  # Expose Keycloak on port 8090
+    networks:
+      - spring-net
+
+  postgres-keycloak:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    networks:
+      - spring-net
 
 volumes:
   rabbitmq-data:
   pgdata:
+
+networks:
+  spring-net:
+    driver: bridge
