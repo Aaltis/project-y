@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+      - name: keycloak
+        image: "{{ .Values.keycloak.image }}:{{ .Values.keycloak.tag }}"
+        args:
+        - "start-dev"
+        - "--import-realm"
+        env:
+        # Database Configuration
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL_HOST
+          value: "{{ .Values.keycloak.database.host }}"
+        - name: KC_DB_URL_DATABASE
+          value: "{{ .Values.keycloak.database.name }}"
+        - name: KC_DB_USERNAME
+          value: "{{ .Values.keycloak.database.user }}"
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: KC_DB_PASSWORD
+
+        # Admin User Configuration
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: "keycloak"  # Ensure username is explicitly set
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: "keycloak"  # Ensure username is explicitly set
+
+
+        # Network & Proxy Settings
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        - name: KC_PROXY
+          value: "edge"
+
+        volumeMounts:
+        - name: keycloak-realm
+          mountPath: /opt/keycloak/data/import
+      volumes:
+      - name: keycloak-realm
+        configMap:
+          name: keycloak-ttb-realm-config
+
+---
+# ------------------------------------
+# Keycloak ConfigMap (Realm Import)
+# ------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-ttb-realm-config
+data:
+  keycloak-ttb-realm-config.json: |-
+    {{- .Files.Get "realmconfig/keycloak-ttb-realm-config.json" | nindent 4 }}
+
+---
+# ------------------------------------
+# Keycloak Service
+# ------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - protocol: TCP
+      port: 8080  # This must match the Ingress definition
+      targetPort: 8080
+  type: ClusterIP  # ClusterIP required for ingress

@@ -1,0 +1,80 @@
+replicaCount: 1
+
+environment: "dev"
+
+# Keycloak
+keycloak:
+  image: quay.io/keycloak/keycloak
+  tag: latest
+  service:
+    type: NodePort
+    port: 8080
+    nodePort: 32000
+  database:
+    host: postgres-keycloak
+    port: 5432
+    user: keycloak
+    password: "securepassword"
+    name: keycloak
+  ingress:
+    enabled: true
+    host: api.example.com
+  realmConfigMap: keycloak-ttb-realm-config
+
+# Spring Boot API
+customer:
+  image: localhost:5000/customer
+  tag: latest  
+  pullPolicy: IfNotPresent  # This prevents Kubernetes from always trying to pull the image
+  config:
+    main_database_url: "jdbc:postgresql://postgres:5432/maindb"
+    main_database_user: "postgres"
+    main_database_driver: "org.postgresql.Driver"
+    jpa_dialect: "org.hibernate.dialect.PostgreSQLDialect"
+    jpa_hibernate: "update"
+  service:
+    name: customer-service
+  secret:
+    database_password: "postgres"  # DO NOT store real passwords here! Use environment variables.
+
+# PostgreSQL
+postgres:
+  enabled: true
+  image: postgres:13
+  service:
+    type: ClusterIP
+    port: 5432
+  storage:
+    size: 5Gi
+
+ingress:
+  enabled: true
+  host: api.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/limit-rpm: "20"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+  paths:
+    - path: /auth
+      backendService: keycloak
+      backendPort: 8080
+    - path: /api
+      backendService: spring-boot-api
+      backendPort: 8080
+
+config:
+  app:
+    RABBIT_MQ_HOST: "rabbitmq"
+    RABBIT_MQ_PORT: "5672"
+    RABBIT_MQ_USER: "guest"
+  database_host: "postgres"
+  database_port: "5432"
+  log_level: "DEBUG"
+  
+secrets:
+  jwt_secret: "supersecretjwtkey"
+  DATABASE_NAME : "postgres"
+  DATABASE_USER: "postgres"
+  DATABASE_PASSWORD: "postgres"
+  KC_DB_PASSWORD: "keycloak"
+  KC_BOOTSTRAP_ADMIN_PASSWORD: "keycloak"

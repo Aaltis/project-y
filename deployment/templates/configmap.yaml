@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # Database Configuration
+  database_host: "{{ .Values.customer.config.database_host | default "postgres" }}"
+  database_port: "{{ .Values.customer.config.database_port | default "5432" }}"
+  database_name: "{{ .Values.customer.config.database_name | default "maindb" }}"
+  database_driver: "{{ .Values.customer.config.database_driver | default "org.postgresql.Driver" }}"
+  database_user: "{{ .Values.customer.config.database_user | default "postgres" }}"
+  database_url: "jdbc:postgresql://{{ .Values.customer.config.database_host | default "postgres" }}:{{ .Values.customer.config.database_port | default "5432" }}/{{ .Values.customer.config.database_name | default "maindb" }}"
+  JPA_DIALECT: "{{ .Values.customer.config.jpa_dialect }}"
+  JPA_HIBERNATE: "{{ .Values.customer.config.jpa_hibernate }}"
+
+  # Keycloak Configuration
+  keycloak_realm: "{{ .Values.keycloak.config.realm | default "test" }}"
+  keycloak_server_url: "{{ .Values.keycloak.config.server_url | default "http://keycloak:8080" }}"
+  keycloak_client_id: "{{ .Values.keycloak.config.client_id | default "customer-app" }}"
+  keycloak_client_secret: "{{ .Values.keycloak.config.client_secret | default "secret" }}"
+  keycloak_issuer_uri: "{{ .Values.keycloak.config.issuer_uri | default "http://keycloak:8080/realms/test" }}"
+  
+  # Logging Configuration
+  log_level: "{{ .Values.customer.config.log_level | default "DEBUG" }}"
+
+  # Other Custom App Configurations
+  spring_profiles_active: "{{ .Values.customer.config.spring_profiles_active | default "dev" }}"
+  app_mode: "{{ .Values.customer.config.app_mode | default "development" }}"
+  feature_flag_new_ui: "{{ .Values.customer.config.feature_flag_new_ui | default "false" }}"

@@ -1,0 +1,31 @@
+//change to minikube docker env in powershell:
+& minikube docker-env | Invoke-Expression
+
+//build docker images for minikube:
+docker-compose -f .\kubernetes-docker-compose.yml build
+
+
+// delete all pods, will be re-deployed from image:
+ kubectl delete pods --all         
+
+
+//install keycloak with helm:
+helm repo add codecentric https://codecentric.github.io/helm-charts
+helm install keycloak codecentric/keycloak --set keycloak.username=admin --set keycloak.password=admin --set postgresql.enabled=true --set postgresql.postgresqlDatabase=keycloak --set postgresql.postgresqlUsername=keycloak --set postgresql.postgresqlPassword=password
+
+
+kubectl delete deployments --all
+
+
+kubectl exec -it <pod-name> -- bash
+
+kubectl exec -it postgres-keycloak-688b8bfcd-hswk6  -- bash
+psql -U keycloak -d keycloak
+
+psql -h postgres-keycloak -U keycloak -d keycloak
+"SELECT ID, USERNAME FROM USER_ENTITY WHERE USERNAME = 'admin';"
+
+#update admin password to keycloak
+kubectl exec -it <keycloak-pod-name> -- /opt/keycloak/bin/kc.sh set-password --username admin --new-password <new-password>
+kubectl exec -it keycloak-8b8859b6b-f8nfb -- /opt/keycloak/bin/kc.sh set-password --username admin --new-password keycloak
+kubectl rollout restart deployment keycloak

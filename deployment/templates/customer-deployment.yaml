@@ -1,0 +1,113 @@
+# ------------------------------------
+# Customer Deployment
+# ------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: customer
+  template:
+    metadata:
+      labels:
+        app: customer
+    spec:
+      containers:
+      - name: customer
+        image: "{{ .Values.customer.image }}:{{ .Values.customer.tag }}"
+        imagePullPolicy: "{{ .Values.customer.pullPolicy }}"
+        env:
+        # General Spring App Config
+        - name: SPRING_APP_NAME
+          value: "Customer"
+        # Database Config
+        - name: DATABASE_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: database_host
+        - name: DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: database_name
+        - name: DATABASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: database_url
+        - name: DATABASE_USER
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: main_database_user
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: main_database_password
+        # JPA / Hibernate
+        - name: JPA_DIALECT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: JPA_DIALECT
+        - name: JPA_HIBERNATE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: JPA_HIBERNATE
+        # Keycloak Configuration
+        - name: KEYCLOAK_REALM
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: keycloak_realm
+        - name: KEYCLOAK_AUTH_SERVER_URL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: keycloak_server_url
+        - name: KEYCLOAK_SSL_REQUIRED
+          value: "external"
+        - name: KEYCLOAK_RESOURCE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: keycloak_client_id
+        - name: KEYCLOAK_CLIENT_SECRET
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: keycloak_client_secret
+        - name: KEYCLOAK_BEARER_ONLY
+          value: "true"
+        - name: KEYCLOAK_USE_RESOURCE_ROLE_MAPPINGS
+          value: "true"
+
+        # JWT Token Validation
+        - name: KEYCLOAK_ISSUER_URI
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: keycloak_issuer_uri
+
+---
+# ------------------------------------
+# Customer Service (Works with Ingress)
+# ------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer
+spec:
+  type: ClusterIP  # Ensures it works with Ingress
+  selector:
+    app: customer
+  ports:
+    - protocol: TCP
+      port: 8080   # This should match the application’s internal port
+      targetPort: 8080  # This should match the container port

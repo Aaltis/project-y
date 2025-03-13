@@ -1,0 +1,79 @@
+replicaCount: 1
+environment: "dev"
+# Keycloak
+keycloak:
+  image: quay.io/keycloak/keycloak
+  tag: latest
+  service:
+    type: ClusterIP  # ClusterIP is required for Ingress to route traffic
+    port: 8080       # Ensure this matches the Ingress port
+  database:
+    host: postgres-keycloak
+    port: 5432
+    user: keycloak
+    password: "securepassword"
+    name: keycloak
+  ingress:
+    enabled: true
+    host: localhost  # Ingress is routing to localhost
+  realmConfigMap: keycloak-ttb-realm-config
+  config:
+    realm: "test"
+    server_url: "http://localhost/auth"  # Must match Ingress path
+    client_id: "customer-app"
+    client_secret: "secret"
+    issuer_uri: "http://localhost/auth/realms/test"    
+
+
+# Spring Boot API
+customer:
+  image: localhost:5000/customer
+  tag: latest  
+  pullPolicy: IfNotPresent  # This prevents Kubernetes from always trying to pull the image
+  config:
+    main_database_url: "jdbc:postgresql://postgres:5432/maindb"
+    main_database_user: "postgres"
+    main_database_driver: "org.postgresql.Driver"
+    jpa_dialect: "org.hibernate.dialect.PostgreSQLDialect"
+    jpa_hibernate: "update"
+    spring_profiles_active: "dev"
+    app_mode: "development"
+    feature_flag_new_ui: "false"
+    admin_username: "admin"
+  service:
+    name: customer-service
+  secret:
+    database_password: "postgres"  # DO NOT store real passwords here! Use environment variables.
+
+# PostgreSQL
+postgres:
+  enabled: true
+  image: postgres:13
+  service:
+    type: ClusterIP
+    port: 5432
+  storage:
+    size: 5Gi
+
+ingress:
+  enabled: true
+  host: "localhost"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/limit-rpm: "20"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+  paths:
+    - path: /auth
+      backendService: keycloak
+      backendPort: 8080
+    - path: /api
+      backendService: spring-boot-api
+      backendPort: 8080
+
+secrets:
+  jwt_secret: "supersecretjwtkey"
+  maindb_name : "maindb"
+  main_database_user: "postgres"
+  main_database_password: "postgres"
+  KC_DB_PASSWORD: "keycloak"
+  KC_BOOTSTRAP_ADMIN_PASSWORD: "keycloak"

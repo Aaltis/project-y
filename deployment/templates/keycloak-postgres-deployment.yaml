@@ -1,0 +1,93 @@
+# ------------------------------------
+# ✅ PostgreSQL Deployment for Keycloak
+# ------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-keycloak
+  template:
+    metadata:
+      labels:
+        app: postgres-keycloak
+    spec:
+      containers:
+      - name: postgres-keycloak
+        image: "{{ .Values.postgres.image }}"
+        ports:
+        - containerPort: {{ .Values.postgres.service.port }}
+        env:
+        - name: POSTGRES_DB
+          value: "{{ .Values.keycloak.database.name }}" # Database for Keycloak
+        - name: POSTGRES_USER
+          value: "{{ .Values.keycloak.database.user }}" # Username for Keycloak
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: KC_DB_PASSWORD # Password for Keycloak
+        volumeMounts:
+        - name: postgres-keycloak-data
+          mountPath: /var/lib/postgresql/data
+          subPath: keycloak  # Ensures persistent storage
+        - name: init-scripts
+          mountPath: /docker-entrypoint-initdb.d  # Ensures init script is executed
+      volumes:
+      - name: postgres-keycloak-data
+        persistentVolumeClaim:
+          claimName: postgres-keycloak-pvc
+      - name: init-scripts
+        configMap:
+          name: postgres-keycloak-init-scripts
+
+---
+# ------------------------------------
+# ✅ PostgreSQL Service for Keycloak
+# ------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-keycloak
+spec:
+  selector:
+    app: postgres-keycloak
+  ports:
+  - protocol: TCP
+    port: {{ .Values.postgres.service.port }}
+    targetPort: 5432
+  type: ClusterIP
+
+---
+# ------------------------------------
+# PostgreSQL Persistent Volume Claim
+# ------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-keycloak-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard  # Make sure this exists in your cluster
+
+---
+# ------------------------------------
+# ✅ ConfigMap with Init Script for Keycloak DB
+# ------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-keycloak-init-scripts
+data:
+  01-init-keycloak-db.sql: |
+    CREATE DATABASE {{ .Values.keycloak.database.name }};
+    CREATE USER {{ .Values.keycloak.database.user }} WITH ENCRYPTED PASSWORD '{{ .Values.keycloak.database.password }}';
+    GRANT ALL PRIVILEGES ON DATABASE {{ .Values.keycloak.database.name }} TO {{ .Values.keycloak.database.user }};
+    ALTER DATABASE {{ .Values.keycloak.database.name }} OWNER TO {{ .Values.keycloak.database.user }};

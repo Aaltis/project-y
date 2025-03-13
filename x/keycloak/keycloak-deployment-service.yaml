@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:latest
+          args:
+            - "start-dev"
+            - "--import-realm"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: KC_DB
+              value: "postgres"
+            - name: KC_DB_URL_HOST
+              value: "postgres-keycloak"
+            - name: KC_DB_URL_DATABASE
+              value: "keycloak"
+            - name: KC_DB_USERNAME
+              value: "keycloak"
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: KC_DB_PASSWORD
+          volumeMounts:
+            - name: keycloak-realm
+              mountPath: /opt/keycloak/data/import
+      volumes:
+        - name: keycloak-realm
+          configMap:
+            name: keycloak-ttb-realm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+      nodePort: 32000
+  type: NodePort

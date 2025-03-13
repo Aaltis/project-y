@@ -1,0 +1,109 @@
+# ------------------------------------
+# PostgreSQL Deployment
+# ------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      initContainers:
+      - name: debug-init
+        image: postgres:13  # Uses the same PostgreSQL image
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "🔍 Debugging PostgreSQL Environment Variables..."
+            echo "📌 POSTGRES_USER: $POSTGRES_USER"
+            echo "📌 POSTGRES_PASSWORD: $POSTGRES_PASSWORD"
+            echo "✅ Debugging completed. Starting PostgreSQL container..."
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: main_database_user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: main_database_password
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "maindb"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: main_database_user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: main_database_password
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+          initialDelaySeconds: 20
+          periodSeconds: 10
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+
+---
+# ------------------------------------
+# PostgreSQL Persistent Volume Claim
+# ------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard  # Ensure this exists in your cluster
+
+---
+# ------------------------------------
+# PostgreSQL Service (Added to Expose DB Internally)
+# ------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres  # Service name, must match what other apps use (e.g., "postgres:5432")
+spec:
+  selector:
+    app: postgres
+  ports:
+    - protocol: TCP
+      port: 5432  # Exposes PostgreSQL inside the cluster
+      targetPort: 5432
+  type: ClusterIP  # Ensures only internal access (other pods can use "postgres:5432")
+

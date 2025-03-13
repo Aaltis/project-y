@@ -1,0 +1,26 @@
+# Use an official OpenJDK runtime as a parent image
+FROM eclipse-temurin:17-jdk AS build
+
+WORKDIR /app
+
+# Copy Gradle files first (if using Gradle)
+COPY build.gradle settings.gradle gradlew ./
+COPY gradle gradle
+
+# Copy the application source code
+COPY src src
+
+# Build the application
+RUN ./gradlew build -x test
+
+# Use a lightweight Java runtime image
+FROM eclipse-temurin:17-jdk AS runtime
+
+WORKDIR /app
+
+# Copy the built JAR file from the build stage
+COPY --from=build /app/build/libs/*.jar app.jar
+
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "app.jar"]

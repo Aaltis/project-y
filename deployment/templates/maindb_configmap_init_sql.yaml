@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-sql
+  annotations:
+    "helm.sh/resource-policy": keep  # Prevents Helm from deleting it
+data:
+  init.sql: |
+    CREATE DATABASE maindb;
+    CREATE USER postgres WITH ENCRYPTED PASSWORD 'postgres';
+    GRANT ALL PRIVILEGES ON DATABASE maindb TO postgres;
+    ALTER DATABASE maindb OWNER TO postgres;
