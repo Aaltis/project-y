@@ -13,50 +13,80 @@ spec:
         app: keycloak
     spec:
       containers:
-      - name: keycloak
-        image: "{{ .Values.keycloak.image }}:{{ .Values.keycloak.tag }}"
-        args:
-        - "start-dev"
-        - "--import-realm"
-        env:
-        # Database Configuration
-        - name: KC_DB
-          value: "postgres"
-        - name: KC_DB_URL_HOST
-          value: "{{ .Values.keycloak.database.host }}"
-        - name: KC_DB_URL_DATABASE
-          value: "{{ .Values.keycloak.database.name }}"
-        - name: KC_DB_USERNAME
-          value: "{{ .Values.keycloak.database.user }}"
-        - name: KC_DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: app-secret
-              key: KC_DB_PASSWORD
+        - name: keycloak
+          image: "{{ .Values.keycloak.image }}:{{ .Values.keycloak.tag }}"
+          args:
+            - "start-dev"
+            - "--import-realm"
+          env:
+            # --- Database ---
+            - name: KC_DB
+              value: "postgres"
+            - name: KC_DB_URL_HOST
+              value: "{{ .Values.keycloak.database.host }}"
+            - name: KC_DB_URL_DATABASE
+              value: "{{ .Values.keycloak.database.name }}"
+            - name: KC_DB_USERNAME
+              value: "{{ .Values.keycloak.database.user }}"
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: KC_DB_PASSWORD
 
-        # Admin User Configuration
-        - name: KC_BOOTSTRAP_ADMIN_USERNAME
-          value: "keycloak"  # Ensure username is explicitly set
-        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-          value: "keycloak"  # Ensure username is explicitly set
+            # --- Bootstrap admin ---
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: "keycloak"
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              value: "keycloak"
 
+            # --- Network & proxy ---
+            - name: KC_PROXY
+              value: "edge"
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_HOSTNAME_STRICT_HTTPS
+              value: "false"
+            - name: KC_HTTP_RELATIVE_PATH
+              value: "/auth"
+            - name: KC_HEALTH_ENABLED
+              value: "true"
 
-        # Network & Proxy Settings
-        - name: KC_HOSTNAME_STRICT
-          value: "false"
-        - name: KC_HOSTNAME_STRICT_HTTPS
-          value: "false"
-        - name: KC_PROXY
-          value: "edge"
+          ports:
+            - containerPort: 8080
+            - containerPort: 9000  # Keycloak 26+ management interface (health/metrics)
 
-        volumeMounts:
-        - name: keycloak-realm
-          mountPath: /opt/keycloak/data/import
+          startupProbe:
+            httpGet:
+              path: /auth/health/ready
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 60
+
+          readinessProbe:
+            httpGet:
+              path: /auth/health/ready
+              port: 9000
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            httpGet:
+              path: /auth/health/live
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: keycloak-realm
+              mountPath: /opt/keycloak/data/import
+
       volumes:
-      - name: keycloak-realm
-        configMap:
-          name: keycloak-ttb-realm-config
-
+        - name: keycloak-realm
+          configMap:
+            name: keycloak-crm-realm-config
 ---
 # ------------------------------------
 # Keycloak ConfigMap (Realm Import)
@@ -64,10 +94,10 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: keycloak-ttb-realm-config
+  name: keycloak-crm-realm-config
 data:
-  keycloak-ttb-realm-config.json: |-
-    {{- .Files.Get "realmconfig/keycloak-ttb-realm-config.json" | nindent 4 }}
+  keycloak-crm-realm-config.json: |-
+    {{- .Files.Get "files/realmconfig/keycloak-crm-realm-config.json" | nindent 4 }}
 
 ---
 # ------------------------------------
@@ -85,3 +115,4 @@ spec:
       port: 8080  # This must match the Ingress definition
       targetPort: 8080
   type: ClusterIP  # ClusterIP required for ingress
+  

@@ -1,0 +1,124 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"               # Runs after postgres-init (weight 5)
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: keycloak-init
+        image: curlimages/curl:latest
+        env:
+        - name: ADMIN_USERNAME
+          value: "{{ .Values.keycloak.admin.username }}"
+        - name: ADMIN_PASSWORD
+          value: "{{ .Values.keycloak.admin.password }}"
+        - name: TEST_USERNAME
+          value: "{{ .Values.keycloak.testUser.username }}"
+        - name: TEST_PASSWORD
+          value: "{{ .Values.keycloak.testUser.password }}"
+        - name: TEST_ROLE
+          value: "{{ .Values.keycloak.testUser.role }}"
+        - name: TEST_USERNAME2
+          value: "{{ .Values.keycloak.testUser2.username }}"
+        - name: TEST_PASSWORD2
+          value: "{{ .Values.keycloak.testUser2.password }}"
+        - name: TEST_ROLE2
+          value: "{{ .Values.keycloak.testUser2.role }}"
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Waiting for Keycloak to be ready..."
+            until curl -sf http://keycloak:8080/auth/realms/master > /dev/null; do
+              echo "Still waiting..."
+              sleep 10
+            done
+            echo "Keycloak is ready."
+
+            echo "Getting admin token..."
+            TOKEN=$(curl -sf -X POST \
+              http://keycloak:8080/auth/realms/master/protocol/openid-connect/token \
+              -d "client_id=admin-cli&grant_type=password&username=${ADMIN_USERNAME}&password=${ADMIN_PASSWORD}" \
+              | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+            if [ -z "$TOKEN" ]; then
+              echo "ERROR: Failed to get admin token."
+              exit 1
+            fi
+            echo "Got admin token."
+
+            # Creates a user and assigns a realm role.
+            # Usage: create_user <username> <password> <role>
+            create_user() {
+              local uname="$1" upass="$2" urole="$3"
+
+              echo "--- Creating user '${uname}' with role '${urole}' ---"
+
+              local status
+              status=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                http://keycloak:8080/auth/admin/realms/crm/users \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"username\": \"${uname}\",
+                  \"email\": \"${uname}@example.com\",
+                  \"firstName\": \"Test\",
+                  \"lastName\": \"User\",
+                  \"enabled\": true,
+                  \"emailVerified\": true,
+                  \"requiredActions\": [],
+                  \"credentials\": [{
+                    \"type\": \"password\",
+                    \"value\": \"${upass}\",
+                    \"temporary\": false
+                  }]
+                }")
+
+              if [ "$status" = "201" ]; then
+                echo "User '${uname}' created."
+              elif [ "$status" = "409" ]; then
+                echo "User '${uname}' already exists — skipping."
+              else
+                echo "ERROR: HTTP ${status} creating '${uname}'."
+                exit 1
+              fi
+
+              local user_id
+              user_id=$(curl -sf \
+                "http://keycloak:8080/auth/admin/realms/crm/users?username=${uname}&exact=true" \
+                -H "Authorization: Bearer ${TOKEN}" \
+                | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+              if [ -z "$user_id" ]; then
+                echo "ERROR: Could not look up user ID for '${uname}'."
+                exit 1
+              fi
+
+              local role_rep
+              role_rep=$(curl -sf \
+                "http://keycloak:8080/auth/admin/realms/crm/roles/${urole}" \
+                -H "Authorization: Bearer ${TOKEN}")
+
+              if [ -z "$role_rep" ]; then
+                echo "ERROR: Could not find role '${urole}'."
+                exit 1
+              fi
+
+              curl -sf -X POST \
+                "http://keycloak:8080/auth/admin/realms/crm/users/${user_id}/role-mappings/realm" \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "[${role_rep}]"
+
+              echo "Role '${urole}' assigned to '${uname}'."
+            }
+
+            create_user "${TEST_USERNAME}"  "${TEST_PASSWORD}"  "${TEST_ROLE}"
+            create_user "${TEST_USERNAME2}" "${TEST_PASSWORD2}" "${TEST_ROLE2}"
+
+            echo "All users created."

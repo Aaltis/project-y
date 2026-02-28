@@ -89,11 +89,13 @@ spec:
           value: "true"
 
         # JWT Token Validation
-        - name: KEYCLOAK_ISSUER_URI
+        # jwk-set-uri fetches signing keys from internal Keycloak; no iss claim validation,
+        # so tokens obtained via localhost:8080 (port-forward) are accepted by the cluster pod.
+        - name: KEYCLOAK_JWK_SET_URI
           valueFrom:
             configMapKeyRef:
               name: app-config
-              key: keycloak_issuer_uri
+              key: keycloak_jwk_set_uri
 
 ---
 # ------------------------------------

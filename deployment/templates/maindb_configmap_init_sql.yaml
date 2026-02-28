@@ -10,3 +10,20 @@ data:
     CREATE USER postgres WITH ENCRYPTED PASSWORD 'postgres';
     GRANT ALL PRIVILEGES ON DATABASE maindb TO postgres;
     ALTER DATABASE maindb OWNER TO postgres;
+
+    -- CRM service databases (CREATE IF NOT EXISTS syntax not available; errors are harmless)
+    SELECT 'CREATE DATABASE accountsdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'accountsdb')\gexec
+    GRANT ALL PRIVILEGES ON DATABASE accountsdb TO postgres;
+    ALTER DATABASE accountsdb OWNER TO postgres;
+
+    SELECT 'CREATE DATABASE contactsdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'contactsdb')\gexec
+    GRANT ALL PRIVILEGES ON DATABASE contactsdb TO postgres;
+    ALTER DATABASE contactsdb OWNER TO postgres;
+
+    SELECT 'CREATE DATABASE opportunitiesdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'opportunitiesdb')\gexec
+    GRANT ALL PRIVILEGES ON DATABASE opportunitiesdb TO postgres;
+    ALTER DATABASE opportunitiesdb OWNER TO postgres;
+
+    SELECT 'CREATE DATABASE activitiesdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'activitiesdb')\gexec
+    GRANT ALL PRIVILEGES ON DATABASE activitiesdb TO postgres;
+    ALTER DATABASE activitiesdb OWNER TO postgres;

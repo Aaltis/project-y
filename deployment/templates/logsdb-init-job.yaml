@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: logsdb-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "6"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: logsdb-init
+        image: postgres:13
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Waiting for postgres-logs to be ready..."
+            until pg_isready -h postgres-logs -U {{ .Values.logsdb.user }} -p 5432; do
+              echo "Still waiting..."
+              sleep 5
+            done
+            echo "postgres-logs is ready."
+
+            echo "Creating request_log table if it does not exist..."
+            PGPASSWORD="${LOGSDB_PASSWORD}" psql \
+              -h postgres-logs \
+              -U {{ .Values.logsdb.user }} \
+              -d {{ .Values.logsdb.database }} \
+              -c "
+                CREATE TABLE IF NOT EXISTS request_log (
+                  id        BIGSERIAL PRIMARY KEY,
+                  method    VARCHAR(10),
+                  path      TEXT,
+                  status    INTEGER,
+                  duration_ms BIGINT,
+                  username  VARCHAR(255),
+                  timestamp TIMESTAMPTZ
+                );
+              "
+            echo "Done."
+        env:
+        - name: LOGSDB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: logsdb_password

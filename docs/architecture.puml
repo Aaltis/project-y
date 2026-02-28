@@ -1,0 +1,122 @@
+@startuml architecture
+
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam ArrowColor #555555
+skinparam ArrowFontSize 11
+skinparam componentStyle rectangle
+skinparam linetype ortho
+skinparam padding 6
+
+title Project Y — Architecture Overview
+
+' ── Colour scheme ──────────────────────────────────────────
+skinparam component {
+    BackgroundColor<<client>>    #E3F2FD
+    BorderColor<<client>>        #1565C0
+    FontColor<<client>>          #0D47A1
+
+    BackgroundColor<<infra>>     #ECEFF1
+    BorderColor<<infra>>         #455A64
+
+    BackgroundColor<<gateway>>   #FFF8E1
+    BorderColor<<gateway>>       #F57F17
+
+    BackgroundColor<<service>>   #E8F5E9
+    BorderColor<<service>>       #2E7D32
+
+    BackgroundColor<<messaging>> #FCE4EC
+    BorderColor<<messaging>>     #880E4F
+
+    BackgroundColor<<database>>  #EDE7F6
+    BorderColor<<database>>      #4527A0
+
+    BackgroundColor<<job>>       #F3F3F3
+    BorderColor<<job>>           #9E9E9E
+    FontStyle<<job>>             italic
+}
+
+skinparam database {
+    BackgroundColor #EDE7F6
+    BorderColor     #4527A0
+}
+
+' ── Actors / external ──────────────────────────────────────
+actor "Developer /\nPostman" as dev <<client>>
+
+' ── Local machine ──────────────────────────────────────────
+package "Local Machine" #F5F5F5 {
+    component "kubectl port-forward\nlocalhost:8080 → ingress:80\n\nBridge: Docker-driver Minikube\nnode IP is not routable from\nthe host, so port-forward is\nthe only access method." as portfwd <<infra>>
+}
+
+' ── Kubernetes cluster ─────────────────────────────────────
+package "Kubernetes — Minikube (docker driver)" #FAFAFA {
+
+    ' ── Ingress ──────────────────────────────────────────
+    package "Ingress Layer" #F9FBE7 {
+        component "ingress-nginx\n\nReceives all inbound traffic\nand forwards it to the Gateway.\nNo path rewriting or rate-limiting\nhere — that is the Gateway's job.\n\nNodePort: 80:31996 / 443:31387\n(accessed via port-forward)" as ingress <<infra>>
+    }
+
+    ' ── Gateway layer ────────────────────────────────────
+    package "Gateway Layer" #FFFDE7 {
+        component "**Spring Cloud Gateway**\n(reactive / WebFlux)\n\n• /auth/** → Keycloak (pass-through)\n• /api/**  → Customer API\n\nFor every /api/* request:\n  1. Extracts JWT username from\n     Authorization header\n  2. Checks per-user rate limit\n     (5 req/sec, Bucket4j in-memory)\n     → HTTP 429 if exceeded\n  3. Forwards request downstream\n  4. On response: publishes log\n     message to RabbitMQ (async)\n     — never blocks the response" as gateway <<gateway>>
+    }
+
+    ' ── Application services ─────────────────────────────
+    package "Application Services" #F1F8E9 {
+
+        component "**Keycloak 26**\n(Identity Provider)\n\n• Manages realm \"TTB\"\n• Issues JWT access tokens\n  (client: TTB, public client)\n• Stores users, roles, sessions\n• /auth/realms/TTB/protocol/\n  openid-connect/token\n  → returns Bearer JWT\n• Health / metrics: port 9000\n• Import realm from JSON on\n  startup (--import-realm)\n• testuser auto-created\n  by keycloak-init Job" as keycloak <<service>>
+
+        component "**Customer API**\n(Spring Boot 3.4.3)\n\nEndpoints (JWT required):\n  POST /api/customers/create\n    — save new customer record;\n      createdBy = JWT username\n  PUT  /api/customers/edit/{id}\n    — update record if caller is\n      the creator OR has role\n      \"boss-credential\"\n\nJWT validation:\n  Fetches public keys from\n  Keycloak JWK endpoint\n  (internal cluster DNS)\n  → no issuer-URI check so\n    localhost tokens are accepted" as customer <<service>>
+    }
+
+    ' ── Async logging pipeline ───────────────────────────
+    package "Async Logging Pipeline" #FFF0F5 {
+
+        component "**RabbitMQ 3**\n(Message Broker)\n\nQueue: request-logs (durable)\n\nDecouples the Gateway from\nlogging — if the log consumer\nis slow or restarting, requests\nare not affected.\n\nManagement UI: port 15672\n  (guest / guest)" as rabbitmq <<messaging>>
+
+        component "**Log Consumer**\n(Spring Boot)\n\nListens to queue: request-logs\n\nFor each message, saves a\nRequestLog row to logsdb:\n  method, path, status,\n  duration_ms, username,\n  timestamp\n\nErrors are caught and logged\n(never re-queued in a loop)." as logconsumer <<messaging>>
+    }
+
+    ' ── Databases ─────────────────────────────────────────
+    package "Databases (PostgreSQL 13)" #F5F0FF {
+
+        database "**maindb**\n\nCustomer application data.\ntable: customer\n  id, name, email, createdBy\n\nAccessed by: Customer API" as maindb <<database>>
+
+        database "**keycloak db**\n\nKeycloak internal state.\nRealms, users, clients,\nsessions, tokens.\n\nAccessed by: Keycloak" as keycloakdb <<database>>
+
+        database "**logsdb**\n\nRequest audit trail.\ntable: request_log\n  id, method, path, status,\n  duration_ms, username,\n  timestamp\n\nAccessed by: Log Consumer" as logsdb <<database>>
+    }
+
+    ' ── Post-install Jobs ─────────────────────────────────
+    package "Post-Install Helm Jobs (run once on deploy)" #FAFAFA {
+        component "postgres-init\n(hook-weight 5)\nRuns SQL init script\nto create maindb schema" as jobPostgres <<job>>
+        component "logsdb-init\n(hook-weight 6)\nCreates request_log\ntable in logsdb" as jobLogsdb <<job>>
+        component "keycloak-init\n(hook-weight 10)\nWaits for Keycloak,\ncreates testuser\nin TTB realm via\nAdmin REST API" as jobKeycloak <<job>>
+    }
+}
+
+' ── Request / response flow ────────────────────────────────
+dev        --> portfwd   : HTTP (localhost:8080)
+portfwd    --> ingress   : forwards all traffic
+ingress    --> gateway   : / (all paths)
+
+gateway    --> keycloak  : /auth/**\npass-through
+gateway    --> customer  : /api/**\nrate-limited
+
+' ── Internal calls ────────────────────────────────────────
+customer   --> keycloak  : fetch JWK keys\n(startup + key rotation)\nhttp://keycloak:8080/auth/...
+customer   --> maindb    : read / write\ncustomer records
+keycloak   --> keycloakdb : read / write\nrealm state
+
+' ── Async logging ─────────────────────────────────────────
+gateway    --> rabbitmq  : publish RequestLogMessage\n(after response committed)
+rabbitmq   --> logconsumer : deliver message
+logconsumer --> logsdb   : INSERT request_log
+
+' ── Init jobs ─────────────────────────────────────────────
+jobPostgres ..> maindb    : initialise schema
+jobLogsdb   ..> logsdb    : create table
+jobKeycloak ..> keycloak  : create testuser
+
+@enduml

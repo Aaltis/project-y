@@ -1,3 +1,21 @@
 
 .project
 .vscode/settings.json
+logs/
+.claude/
+
+# Gradle
+.gradle/
+**/build/
+**/gradle/wrapper/gradle-wrapper.jar
+
+# Java
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr

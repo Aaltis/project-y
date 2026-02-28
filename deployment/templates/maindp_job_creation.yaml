@@ -3,12 +3,13 @@ kind: Job
 metadata:
   name: postgres-init
   annotations:
-    "helm.sh/hook": post-install,post-upgrade  # Run AFTER install to avoid ordering issues
-    "helm.sh/hook-weight": "5"                 # Ensure it runs after ConfigMap is created
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   template:
     spec:
-      restartPolicy: Never
+      restartPolicy: OnFailure
       containers:
       - name: postgres-init
         image: postgres:13

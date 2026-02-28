@@ -39,7 +39,7 @@ spec:
       volumes:
       - name: postgres-keycloak-data
         persistentVolumeClaim:
-          claimName: postgres-keycloak-pvc
+          claimName: {{ .Values.postgres.persistence.existingClaim | default "postgres-keycloak-pvc" }}
       - name: init-scripts
         configMap:
           name: postgres-keycloak-init-scripts
@@ -65,17 +65,23 @@ spec:
 # ------------------------------------
 # PostgreSQL Persistent Volume Claim
 # ------------------------------------
+{{- if not .Values.postgres.persistence.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-keycloak-pvc
+  labels:
+    app: postgres-keycloak
+  annotations:
+    "helm.sh/resource-policy": keep
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: {{ .Values.postgres.storageClassName | default "standard" | quote }}
   resources:
     requests:
-      storage: 5Gi
-  storageClassName: standard  # Make sure this exists in your cluster
+      storage: {{ .Values.postgres.storage.size | default "5Gi" | quote }}
+{{- end }}
 
 ---
 # ------------------------------------

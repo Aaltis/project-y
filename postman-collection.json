@@ -1,0 +1,183 @@
+{
+  "info": {
+    "name": "Project Y",
+    "description": "Auth and Customer API for Project Y.\n\n**Setup:**\n1. Start port-forward: `./port-forward.ps1 start` (Windows) or `./port-forward.sh start` (Linux)\n2. Run **Login** — the access token is saved automatically as `{{access_token}}`\n3. Use **Create Customer** or **Edit Customer** — token is injected automatically",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "realm",
+      "value": "TTB",
+      "type": "string"
+    },
+    {
+      "key": "client_id",
+      "value": "TTB",
+      "type": "string"
+    },
+    {
+      "key": "username",
+      "value": "testuser",
+      "type": "string"
+    },
+    {
+      "key": "password",
+      "value": "testpassword",
+      "type": "string"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string",
+      "description": "Populated automatically by the Login request"
+    },
+    {
+      "key": "customer_id",
+      "value": "1",
+      "type": "string",
+      "description": "Set this to the ID returned by Create Customer"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = pm.response.json();",
+                  "",
+                  "if (json.access_token) {",
+                  "    pm.collectionVariables.set('access_token', json.access_token);",
+                  "    console.log('Token saved. Expires in ' + json.expires_in + 's.');",
+                  "} else {",
+                  "    console.error('Login failed — no access_token in response.');",
+                  "    console.error(JSON.stringify(json));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "password" },
+                { "key": "client_id",  "value": "{{client_id}}" },
+                { "key": "username",   "value": "{{username}}" },
+                { "key": "password",   "value": "{{password}}" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/realms/{{realm}}/protocol/openid-connect/token",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "realms", "{{realm}}", "protocol", "openid-connect", "token"]
+            },
+            "description": "Authenticate as testuser and get a JWT.\n\nThe `access_token` is automatically saved to the collection variable `{{access_token}}` — no need to copy it manually.\n\nTokens expire after **5 minutes**. Re-run this request to get a fresh one."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Customer API",
+      "item": [
+        {
+          "name": "Create Customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var json = pm.response.json();",
+                  "    if (json.id) {",
+                  "        pm.collectionVariables.set('customer_id', json.id);",
+                  "        console.log('Customer created with ID ' + json.id + '. Saved to {{customer_id}}.');",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"John Doe\",\n  \"email\": \"john@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/customers/create",
+              "host": ["{{base_url}}"],
+              "path": ["api", "customers", "create"]
+            },
+            "description": "Create a new customer record.\n\nThe `createdBy` field is set automatically to the authenticated user's username.\n\nThe returned `id` is saved to `{{customer_id}}` for use in Edit Customer."
+          }
+        },
+        {
+          "name": "Edit Customer",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Jane Doe\",\n  \"email\": \"jane@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/customers/edit/{{customer_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "customers", "edit", "{{customer_id}}"]
+            },
+            "description": "Update an existing customer by ID.\n\n`{{customer_id}}` is set automatically after Create Customer, or you can set it manually in the collection variables.\n\n**Authorization rules:**\n- The original creator of the record can always edit it.\n- Users with the `boss-credential` role can edit any record.\n- All others receive HTTP 403."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -17,7 +17,7 @@ public class SecurityConfig {
         .csrf(csrf -> csrf.disable()) // Proper way to disable CSRF in Spring Security 6  
                 .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/customers/create").authenticated()
-                .requestMatchers("/api/customers/edit/**").hasAnyRole("boss-credential", "user")
+                .requestMatchers("/api/customers/edit/**").authenticated()
                 .anyRequest().permitAll()
             )
             .oauth2ResourceServer(oauth2 -> oauth2

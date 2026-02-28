@@ -1,0 +1,35 @@
+{
+  "realm": "crm",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "accessTokenLifespan": 300,
+  "defaultSignatureAlgorithm": "RS256",
+  "roles": {
+    "realm": [
+      {
+        "name": "crm_admin",
+        "description": "Full access to all CRM resources"
+      },
+      {
+        "name": "crm_sales",
+        "description": "Access to own CRM resources (ownerId == token.sub)"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "crm-api",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"]
+    }
+  ],
+  "users": []
+}
