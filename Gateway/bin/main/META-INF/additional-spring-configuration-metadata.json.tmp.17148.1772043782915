@@ -1,0 +1,10 @@
+{
+  "properties": [
+    {"name": "gateway.routes.keycloak-uri",       "type": "java.lang.String", "description": "URI of the Keycloak service"},
+    {"name": "gateway.routes.customer-uri",       "type": "java.lang.String", "description": "URI of the legacy Customer service"},
+    {"name": "gateway.routes.accounts-uri",       "type": "java.lang.String", "description": "URI of the Accounts CRM service"},
+    {"name": "gateway.routes.contacts-uri",       "type": "java.lang.String", "description": "URI of the Contacts CRM service"},
+    {"name": "gateway.routes.opportunities-uri",  "type": "java.lang.String", "description": "URI of the Opportunities CRM service"},
+    {"name": "gateway.routes.activities-uri",     "type": "java.lang.String", "description": "URI of the Activities CRM service"}
+  ]
+}

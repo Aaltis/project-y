@@ -3,34 +3,23 @@ kind: Ingress
 metadata:
   name: api-ingress
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /  # Ensures incoming request paths match the backend service's expected URL structure.
-    nginx.ingress.kubernetes.io/limit-rpm: "20"
-    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+    # Rate limiting and path rewriting are handled inside Spring Cloud Gateway.
+    # Ingress only proxies; no rewrite-target so paths reach the gateway intact.
     nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-set-header: "X-Forwarded-Proto http"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
 spec:
   ingressClassName: nginx
   rules:
-  - host: {{ .Values.ingress.host | default "localhost" }}  # Default hostname if missing in values.yaml
+  - host: {{ .Values.ingress.host | default "app.local" }}
     http:
       paths:
-      # Route /auth requests to Keycloak
-      - path: /auth
+      - path: /
         pathType: Prefix
         backend:
           service:
-            name: keycloak
+            name: gateway
             port:
-              number: 8080  # Correct default for Keycloak
-
-      # Route /api requests to Customer Service
-      - path: /api
-        pathType: Prefix
-        backend:
-          service:
-            name: customer
-            port:
-              number: {{ .Values.customer.service.port | default 80 }}  # Correct default for Customer Service
+              number: 8080

@@ -1,0 +1,80 @@
+# ------------------------------------
+# PostgreSQL for Logs (logsdb)
+# ------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-logs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-logs
+  template:
+    metadata:
+      labels:
+        app: postgres-logs
+    spec:
+      containers:
+      - name: postgres-logs
+        image: "{{ .Values.logsdb.image }}"
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "{{ .Values.logsdb.database }}"
+        - name: POSTGRES_USER
+          value: "{{ .Values.logsdb.user }}"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: logsdb_password
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: "md5"
+        volumeMounts:
+        - name: logsdb-data
+          mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "pg_isready -U $(POSTGRES_USER) -d $(POSTGRES_DB)"]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "pg_isready -U $(POSTGRES_USER) -d $(POSTGRES_DB)"]
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          failureThreshold: 3
+      volumes:
+      - name: logsdb-data
+        persistentVolumeClaim:
+          claimName: postgres-logs-pvc
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-logs-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: "{{ .Values.logsdb.storage.size }}"
+  storageClassName: standard
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-logs
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres-logs
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432

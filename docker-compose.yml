@@ -1,0 +1,315 @@
+# CRM MVP — Docker Compose stack
+#
+# Usage:
+#   .\scripts\compose-up.ps1           # build JARs + images + start (foreground)
+#   .\scripts\compose-up.ps1 -Detach   # start detached
+#   .\scripts\compose-up.ps1 -SkipBuild # skip Gradle, just rebuild images + start
+#   .\scripts\compose-down.ps1         # stop and remove containers
+#   .\scripts\compose-down.ps1 -Volumes # also wipe all data volumes
+#
+# Access:
+#   http://localhost:8080/api/...              — CRM API (via Gateway)
+#   http://localhost:8080/auth/admin           — Keycloak admin (keycloak / keycloak)
+#   http://localhost:15672                     — RabbitMQ management (guest / guest)
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — main app databases
+  # (maindb, accountsdb, contactsdb, opportunitiesdb, activitiesdb)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-main-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Keycloak database
+  # ---------------------------------------------------------------------------
+  postgres-keycloak:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      POSTGRES_DB: keycloak
+    volumes:
+      - postgres-keycloak-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Logs database
+  # ---------------------------------------------------------------------------
+  postgres-logs:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: loguser
+      POSTGRES_PASSWORD: logpassword
+      POSTGRES_DB: logsdb
+      POSTGRES_HOST_AUTH_METHOD: md5
+    volumes:
+      - postgres-logs-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "loguser"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
+  # RabbitMQ
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Keycloak  (start-dev mode + realm auto-import)
+  # Realm JSON is mounted to /opt/keycloak/data/import/ and imported on startup.
+  # Users are NOT in the realm JSON — keycloak-init creates them below.
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres-keycloak
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KC_BOOTSTRAP_ADMIN_USERNAME: keycloak
+      KC_BOOTSTRAP_ADMIN_PASSWORD: keycloak
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_PROXY: edge
+    volumes:
+      - ./deployment/files/realmconfig/keycloak-crm-realm-config.json:/opt/keycloak/data/import/crm-realm.json:ro
+    depends_on:
+      postgres-keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/localhost/9000"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Keycloak user init — runs once after Keycloak is healthy
+  # Creates testuser (crm_sales) and testuser2 (crm_sales) in the crm realm.
+  # ---------------------------------------------------------------------------
+  keycloak-init:
+    image: curlimages/curl:latest
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |-
+        set -e
+        echo "Getting Keycloak admin token..."
+        TOKEN=$$(curl -sf -X POST \
+          http://keycloak:8080/auth/realms/master/protocol/openid-connect/token \
+          -d "client_id=admin-cli&grant_type=password&username=keycloak&password=keycloak" \
+          | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+        if [ -z "$$TOKEN" ]; then echo "ERROR: no admin token"; exit 1; fi
+        echo "Got admin token."
+
+        create_user() {
+          uname=$$1 upass=$$2 urole=$$3
+          echo "--- Creating user $$uname ---"
+          status=$$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            http://keycloak:8080/auth/admin/realms/crm/users \
+            -H "Authorization: Bearer $$TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"$$uname\",\"email\":\"$$uname@example.com\",\"firstName\":\"Test\",\"lastName\":\"User\",\"enabled\":true,\"emailVerified\":true,\"credentials\":[{\"type\":\"password\",\"value\":\"$$upass\",\"temporary\":false}]}")
+          if [ "$$status" = "201" ]; then
+            echo "User $$uname created."
+          elif [ "$$status" = "409" ]; then
+            echo "User $$uname already exists, skipping."
+          else
+            echo "ERROR: HTTP $$status creating $$uname"; exit 1
+          fi
+          user_id=$$(curl -sf \
+            "http://keycloak:8080/auth/admin/realms/crm/users?username=$$uname&exact=true" \
+            -H "Authorization: Bearer $$TOKEN" \
+            | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+          role_rep=$$(curl -sf \
+            "http://keycloak:8080/auth/admin/realms/crm/roles/$$urole" \
+            -H "Authorization: Bearer $$TOKEN")
+          curl -sf -X POST \
+            "http://keycloak:8080/auth/admin/realms/crm/users/$$user_id/role-mappings/realm" \
+            -H "Authorization: Bearer $$TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "[$$role_rep]"
+          echo "Role $$urole assigned to $$uname."
+        }
+
+        create_user testuser  testpassword  crm_sales
+        create_user testuser2 testpassword2 crm_sales
+        echo "All users created."
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Gateway  (Spring Cloud Gateway — single public entry point on :8080)
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ./Gateway
+    image: gateway:latest
+    restart: on-failure
+    ports:
+      - "8080:8080"
+    environment:
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/auth/realms/crm/protocol/openid-connect/certs
+      CUSTOMER_URI: http://customer:8080
+      KEYCLOAK_URI: http://keycloak:8080
+      ACCOUNTS_URI: http://accounts:8081
+      CONTACTS_URI: http://contacts:8082
+      OPPORTUNITIES_URI: http://opportunities:8083
+      ACTIVITIES_URI: http://activities:8084
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Customer service  (port 8080 internally)
+  # ---------------------------------------------------------------------------
+  customer:
+    build:
+      context: ./Customer
+    image: customer:latest
+    restart: on-failure
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/maindb
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/auth/realms/crm/protocol/openid-connect/certs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Accounts service  (port 8081 internally)
+  # ---------------------------------------------------------------------------
+  accounts:
+    build:
+      context: ./Accounts
+    image: accounts:latest
+    restart: on-failure
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/accountsdb
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/auth/realms/crm/protocol/openid-connect/certs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Contacts service  (port 8082 internally)
+  # ---------------------------------------------------------------------------
+  contacts:
+    build:
+      context: ./Contacts
+    image: contacts:latest
+    restart: on-failure
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/contactsdb
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/auth/realms/crm/protocol/openid-connect/certs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Opportunities service  (port 8083 internally)
+  # ---------------------------------------------------------------------------
+  opportunities:
+    build:
+      context: ./Opportunities
+    image: opportunities:latest
+    restart: on-failure
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/opportunitiesdb
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/auth/realms/crm/protocol/openid-connect/certs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Activities service  (port 8084 internally)
+  # ---------------------------------------------------------------------------
+  activities:
+    build:
+      context: ./Activities
+    image: activities:latest
+    restart: on-failure
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/activitiesdb
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/auth/realms/crm/protocol/openid-connect/certs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Log Consumer  (no HTTP port — consumes from RabbitMQ only)
+  # ---------------------------------------------------------------------------
+  log-consumer:
+    build:
+      context: ./LogConsumer
+    image: log-consumer:latest
+    restart: on-failure
+    environment:
+      LOGSDB_URL: jdbc:postgresql://postgres-logs:5432/logsdb
+      LOGSDB_USER: loguser
+      LOGSDB_PASSWORD: logpassword
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+    depends_on:
+      postgres-logs:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  postgres-keycloak-data:
+  postgres-logs-data:

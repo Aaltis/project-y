@@ -18,7 +18,7 @@ data:
   keycloak_server_url: "{{ .Values.keycloak.config.server_url | default "http://keycloak:8080" }}"
   keycloak_client_id: "{{ .Values.keycloak.config.client_id | default "customer-app" }}"
   keycloak_client_secret: "{{ .Values.keycloak.config.client_secret | default "secret" }}"
-  keycloak_issuer_uri: "{{ .Values.keycloak.config.issuer_uri | default "http://keycloak:8080/realms/test" }}"
+  keycloak_jwk_set_uri: "{{ .Values.keycloak.config.jwk_set_uri }}"
   
   # Logging Configuration
   log_level: "{{ .Values.customer.config.log_level | default "DEBUG" }}"

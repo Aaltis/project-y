@@ -16,20 +16,32 @@ keycloak:
   ingress:
     enabled: true
     host: localhost  # Ingress is routing to localhost
-  realmConfigMap: keycloak-ttb-realm-config
+  realmConfigMap: keycloak-crm-realm-config
   config:
-    realm: "test"
-    server_url: "http://localhost/auth"  # Must match Ingress path
-    client_id: "customer-app"
-    client_secret: "secret"
-    issuer_uri: "http://localhost/auth/realms/test"    
+    realm: "crm"
+    server_url: "http://keycloak:8080/auth"
+    client_id: "crm-api"
+    client_secret: ""
+    issuer_uri: "http://keycloak:8080/auth/realms/crm"
+    jwk_set_uri: "http://keycloak:8080/auth/realms/crm/protocol/openid-connect/certs"
+  admin:
+    username: "admin"
+    password: "admin"
+  testUser:
+    username: "testuser"
+    password: "testpassword"
+    role: "crm_sales"
+  testUser2:
+    username: "testuser2"
+    password: "testpassword2"
+    role: "crm_sales"
 
 
 # Spring Boot API
 customer:
-  image: localhost:5000/customer
-  tag: latest  
-  pullPolicy: IfNotPresent  # This prevents Kubernetes from always trying to pull the image
+  image: customer
+  tag: latest
+  pullPolicy: Never  # Image must be pre-built into minikube's docker daemon: eval $(minikube docker-env) && docker build -t customer:latest .
   config:
     main_database_url: "jdbc:postgresql://postgres:5432/maindb"
     main_database_user: "postgres"
@@ -42,6 +54,7 @@ customer:
     admin_username: "admin"
   service:
     name: customer-service
+    port: 8080
   secret:
     database_password: "postgres"  # DO NOT store real passwords here! Use environment variables.
 
@@ -54,26 +67,66 @@ postgres:
     port: 5432
   storage:
     size: 5Gi
+  persistence:
+    existingClaim: "postgres-keycloak-pvc"
 
 ingress:
   enabled: true
   host: "localhost"
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/limit-rpm: "20"
-    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
   paths:
-    - path: /auth
-      backendService: keycloak
+    - path: /
+      backendService: gateway
       backendPort: 8080
-    - path: /api
-      backendService: spring-boot-api
-      backendPort: 8080
+
+gateway:
+  image: gateway
+  tag: latest
+  pullPolicy: Never
+
+accounts:
+  image: accounts
+  tag: latest
+  pullPolicy: Never
+
+contacts:
+  image: contacts
+  tag: latest
+  pullPolicy: Never
+
+opportunities:
+  image: opportunities
+  tag: latest
+  pullPolicy: Never
+
+activities:
+  image: activities
+  tag: latest
+  pullPolicy: Never
+
+rabbitmq:
+  image: rabbitmq:3-management
+  config:
+    defaultUser: guest
+    defaultPass: guest
+
+logConsumer:
+  image: log-consumer
+  tag: latest
+  pullPolicy: Never
+
+logsdb:
+  image: postgres:13
+  database: logsdb
+  user: loguser
+  password: logpassword
+  storage:
+    size: 5Gi
 
 secrets:
   jwt_secret: "supersecretjwtkey"
-  maindb_name : "maindb"
+  maindb_name: "maindb"
   main_database_user: "postgres"
   main_database_password: "postgres"
   KC_DB_PASSWORD: "keycloak"
   KC_BOOTSTRAP_ADMIN_PASSWORD: "keycloak"
+  logsdb_password: "logpassword"
