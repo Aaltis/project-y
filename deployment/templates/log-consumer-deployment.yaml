@@ -20,21 +20,3 @@ spec:
       - name: log-consumer
         image: "{{ .Values.logConsumer.image }}:{{ .Values.logConsumer.tag }}"
         imagePullPolicy: "{{ .Values.logConsumer.pullPolicy }}"
-        env:
-        - name: LOGSDB_URL
-          value: "jdbc:postgresql://postgres-logs:5432/{{ .Values.logsdb.database }}"
-        - name: LOGSDB_USER
-          value: "{{ .Values.logsdb.user }}"
-        - name: LOGSDB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: app-secret
-              key: logsdb_password
-        - name: RABBITMQ_HOST
-          value: "rabbitmq"
-        - name: RABBITMQ_PORT
-          value: "5672"
-        - name: RABBITMQ_USER
-          value: "{{ .Values.rabbitmq.config.defaultUser }}"
-        - name: RABBITMQ_PASSWORD
-          value: "{{ .Values.rabbitmq.config.defaultPass }}"

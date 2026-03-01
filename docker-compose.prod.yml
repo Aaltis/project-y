@@ -1,0 +1,128 @@
+# CRM MVP — Production overlay
+#
+# Configures Spring Boot services and Keycloak to use EXTERNAL databases.
+# No database containers are started — you must provision them separately.
+#
+# Usage:
+#   1. Copy .env.prod.example to .env.prod and fill in all values.
+#   2. .\scripts\docker\compose-up.ps1 -Env prod
+#
+# How it works:
+#   Spring Boot env vars (SPRING_DATASOURCE_*) have higher precedence than
+#   Config Server properties, so they override whatever the config server serves.
+#
+# Merge command: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Application services — external DB connection overrides
+  # Spring Boot reads SPRING_DATASOURCE_* from the container environment,
+  # which takes precedence over the Config Server's datasource properties.
+  # ---------------------------------------------------------------------------
+
+  customer:
+    restart: always
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${APP_DB_HOST}:${APP_DB_PORT:-5432}/maindb
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  accounts:
+    restart: always
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${APP_DB_HOST}:${APP_DB_PORT:-5432}/accountsdb
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  contacts:
+    restart: always
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${APP_DB_HOST}:${APP_DB_PORT:-5432}/contactsdb
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  opportunities:
+    restart: always
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${APP_DB_HOST}:${APP_DB_PORT:-5432}/opportunitiesdb
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  activities:
+    restart: always
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${APP_DB_HOST}:${APP_DB_PORT:-5432}/activitiesdb
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ---------------------------------------------------------------------------
+  # Log Consumer — separate logs DB (may differ from app DB host)
+  # ---------------------------------------------------------------------------
+  log-consumer:
+    restart: always
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://${LOGS_DB_HOST}:${LOGS_DB_PORT:-5432}/logsdb
+      SPRING_DATASOURCE_USERNAME: ${LOGS_DB_USER}
+      SPRING_DATASOURCE_PASSWORD: ${LOGS_DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # ---------------------------------------------------------------------------
+  # Keycloak — external DB
+  # The base file uses ${KEYCLOAK_DB_HOST:-postgres-keycloak} etc., so setting
+  # these env vars (via .env.prod) is sufficient — no override block needed here
+  # except for enforcing restart: always.
+  # ---------------------------------------------------------------------------
+  keycloak:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure services — restart: always in production
+  # ---------------------------------------------------------------------------
+  config-server:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  rabbitmq:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  gateway:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512m

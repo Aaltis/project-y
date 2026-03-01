@@ -3,27 +3,32 @@
 skinparam backgroundColor #FAFAFA
 skinparam defaultFontName Arial
 skinparam ArrowColor #555555
-skinparam ArrowFontSize 11
+skinparam ArrowFontSize 10
 skinparam componentStyle rectangle
 skinparam linetype ortho
-skinparam padding 6
+skinparam padding 5
+skinparam nodesep 40
+skinparam ranksep 50
 
-title Project Y — Architecture Overview
+title Project Y — CRM MVP Architecture (Docker Compose)
 
-' ── Colour scheme ──────────────────────────────────────────
+' ── Colour palette ───────────────────────────────────────────
 skinparam component {
     BackgroundColor<<client>>    #E3F2FD
     BorderColor<<client>>        #1565C0
     FontColor<<client>>          #0D47A1
 
-    BackgroundColor<<infra>>     #ECEFF1
-    BorderColor<<infra>>         #455A64
+    BackgroundColor<<config>>    #FFF3E0
+    BorderColor<<config>>        #E65100
 
     BackgroundColor<<gateway>>   #FFF8E1
     BorderColor<<gateway>>       #F57F17
 
     BackgroundColor<<service>>   #E8F5E9
     BorderColor<<service>>       #2E7D32
+
+    BackgroundColor<<auth>>      #E8EAF6
+    BorderColor<<auth>>          #3949AB
 
     BackgroundColor<<messaging>> #FCE4EC
     BorderColor<<messaging>>     #880E4F
@@ -41,82 +46,110 @@ skinparam database {
     BorderColor     #4527A0
 }
 
-' ── Actors / external ──────────────────────────────────────
+' ── External ─────────────────────────────────────────────────
 actor "Developer /\nPostman" as dev <<client>>
 
-' ── Local machine ──────────────────────────────────────────
-package "Local Machine" #F5F5F5 {
-    component "kubectl port-forward\nlocalhost:8080 → ingress:80\n\nBridge: Docker-driver Minikube\nnode IP is not routable from\nthe host, so port-forward is\nthe only access method." as portfwd <<infra>>
-}
+' ── Docker Compose network ───────────────────────────────────
+package "Docker Compose Network" #F5F5F5 {
 
-' ── Kubernetes cluster ─────────────────────────────────────
-package "Kubernetes — Minikube (docker driver)" #FAFAFA {
-
-    ' ── Ingress ──────────────────────────────────────────
-    package "Ingress Layer" #F9FBE7 {
-        component "ingress-nginx\n\nReceives all inbound traffic\nand forwards it to the Gateway.\nNo path rewriting or rate-limiting\nhere — that is the Gateway's job.\n\nNodePort: 80:31996 / 443:31387\n(accessed via port-forward)" as ingress <<infra>>
+    ' ── Config layer ─────────────────────────────────────────
+    package "Configuration (port 8888)" #FFF3E0 {
+        component "**Config Server**\n(Spring Cloud Config, classpath/native)\n\nServes centralised config to ALL\napp services at startup.\n\nconfig/application.properties  — shared:\n  JPA dialect, driver, JWK URI, actuator\n\nconfig/<name>.properties — per-service:\n  datasource URL, RabbitMQ, feature props\n\nClients use fail-fast + 10-attempt\nexponential-backoff retry." as configserver <<config>>
     }
 
-    ' ── Gateway layer ────────────────────────────────────
-    package "Gateway Layer" #FFFDE7 {
-        component "**Spring Cloud Gateway**\n(reactive / WebFlux)\n\n• /auth/** → Keycloak (pass-through)\n• /api/**  → Customer API\n\nFor every /api/* request:\n  1. Extracts JWT username from\n     Authorization header\n  2. Checks per-user rate limit\n     (5 req/sec, Bucket4j in-memory)\n     → HTTP 429 if exceeded\n  3. Forwards request downstream\n  4. On response: publishes log\n     message to RabbitMQ (async)\n     — never blocks the response" as gateway <<gateway>>
+    ' ── Auth layer ───────────────────────────────────────────
+    package "Authentication" #E8EAF6 {
+        component "**Keycloak 26**\n(Identity Provider)\n\nRealm:  crm\nClient: crm-api  (public)\nRoles:  crm_admin  |  crm_sales\n\nIssues JWT access tokens.\n\nPort 8080 — API\n  /auth/realms/crm/protocol/\n  openid-connect/token\nPort 9000 — management / health" as keycloak <<auth>>
+
+        component "**keycloak-init**\n(one-shot container)\n\nWaits for Keycloak to be healthy,\nthen creates via Admin REST API:\n  testuser  / testpassword  → crm_sales\n  testuser2 / testpassword2 → crm_sales\n\nSkips if users already exist (409)." as keycloakInit <<job>>
     }
 
-    ' ── Application services ─────────────────────────────
-    package "Application Services" #F1F8E9 {
-
-        component "**Keycloak 26**\n(Identity Provider)\n\n• Manages realm \"TTB\"\n• Issues JWT access tokens\n  (client: TTB, public client)\n• Stores users, roles, sessions\n• /auth/realms/TTB/protocol/\n  openid-connect/token\n  → returns Bearer JWT\n• Health / metrics: port 9000\n• Import realm from JSON on\n  startup (--import-realm)\n• testuser auto-created\n  by keycloak-init Job" as keycloak <<service>>
-
-        component "**Customer API**\n(Spring Boot 3.4.3)\n\nEndpoints (JWT required):\n  POST /api/customers/create\n    — save new customer record;\n      createdBy = JWT username\n  PUT  /api/customers/edit/{id}\n    — update record if caller is\n      the creator OR has role\n      \"boss-credential\"\n\nJWT validation:\n  Fetches public keys from\n  Keycloak JWK endpoint\n  (internal cluster DNS)\n  → no issuer-URI check so\n    localhost tokens are accepted" as customer <<service>>
+    ' ── Messaging layer ──────────────────────────────────────
+    package "Messaging (RabbitMQ 3)" #FFF0F5 {
+        component "**RabbitMQ**\n\nQueues (both durable):\n\n  request-logs\n    Producer : Gateway (every /api/* request)\n    Consumer : Log Consumer\n\n  opportunity-events\n    Producer : Opportunities (on stage change)\n    Consumer : none yet — for future use\n\nManagement UI : port 15672 (guest/guest)" as rabbitmq <<messaging>>
     }
 
-    ' ── Async logging pipeline ───────────────────────────
-    package "Async Logging Pipeline" #FFF0F5 {
-
-        component "**RabbitMQ 3**\n(Message Broker)\n\nQueue: request-logs (durable)\n\nDecouples the Gateway from\nlogging — if the log consumer\nis slow or restarting, requests\nare not affected.\n\nManagement UI: port 15672\n  (guest / guest)" as rabbitmq <<messaging>>
-
-        component "**Log Consumer**\n(Spring Boot)\n\nListens to queue: request-logs\n\nFor each message, saves a\nRequestLog row to logsdb:\n  method, path, status,\n  duration_ms, username,\n  timestamp\n\nErrors are caught and logged\n(never re-queued in a loop)." as logconsumer <<messaging>>
+    ' ── Gateway ──────────────────────────────────────────────
+    package "Gateway Layer (port 8080 → host)" #FFFDE7 {
+        component "**Spring Cloud Gateway**\n(reactive / WebFlux)\n\nRouting — first match wins:\n  /auth/**                          → Keycloak\n  /api/accounts/*/contacts/**       → Contacts  :8082\n  /api/accounts/**                  → Accounts  :8081\n  /api/opportunities/*/activities/** → Activities :8084\n  /api/opportunities/**             → Opportunities :8083\n  /api/customers/**                 → Customer  :8080\n\nGlobal filter on every /api/* request:\n  1. Extract JWT username (Base64-decode JWT payload)\n  2. Rate-limit: 5 req/s per user (Bucket4j in-memory)\n     → HTTP 429 if exceeded\n  3. Forward to upstream service\n  4. After response: publish RequestLogMessage\n     to request-logs queue (async, best-effort)" as gateway <<gateway>>
     }
 
-    ' ── Databases ─────────────────────────────────────────
+    ' ── CRM services ─────────────────────────────────────────
+    package "CRM Services" #F1F8E9 {
+
+        component "**Customer**  :8080\n(legacy service)\n\nPOST /api/customers/create\nPUT  /api/customers/edit/{id}\n\nDB: maindb" as customer <<service>>
+
+        component "**Accounts**  :8081\n\nPOST /api/accounts\nGET  /api/accounts\nGET  /api/accounts/{id}\n\nownerId set from JWT sub.\nAccess: @perm.canAccess()\n  crm_admin → full access\n  crm_sales → own records only\n\nDB: accountsdb" as accounts <<service>>
+
+        component "**Contacts**  :8082\n\nCRUD nested under accounts:\n  /api/accounts/{id}/contacts/**\n\nDB: contactsdb" as contacts <<service>>
+
+        component "**Opportunities**  :8083\n\nCRUD /api/opportunities\nPATCH /{id}/stage  (stage workflow)\n\nBusiness rules:\n  • Forward-only stage transitions\n    PROSPECT→QUALIFY→PROPOSE\n    →NEGOTIATE→WON | any→LOST\n  • WON gate: amount + closeDate required\n  • On stage change (best-effort):\n    1. POST NOTE activity to Activities\n       (forwards caller JWT)\n    2. Publish StageChangedEvent\n       to opportunity-events queue\n\nDB: opportunitiesdb" as opportunities <<service>>
+
+        component "**Activities**  :8084\n\nCRUD nested under opportunities:\n  /api/opportunities/{id}/activities/**\n\nAlso receives internal POST\nfrom Opportunities (audit trail).\n\nDB: activitiesdb" as activities <<service>>
+
+        component "**Log Consumer**\n(no HTTP port)\n\nSubscribes to: request-logs queue\n\nFor each message, inserts:\n  request_log(method, path, status,\n  duration_ms, username, timestamp)\n\nErrors caught and logged —\nnever re-queued in a loop.\n\nDB: logsdb" as logconsumer <<messaging>>
+    }
+
+    ' ── Databases ────────────────────────────────────────────
     package "Databases (PostgreSQL 13)" #F5F0FF {
 
-        database "**maindb**\n\nCustomer application data.\ntable: customer\n  id, name, email, createdBy\n\nAccessed by: Customer API" as maindb <<database>>
+        database "**postgres**  (main)\n\nmaindb          → Customer\naccountsdb      → Accounts\ncontactsdb      → Contacts\nopportunitiesdb → Opportunities\nactivitiesdb    → Activities\n\nDev: Docker container.\nProd: external host (APP_DB_HOST).\n\nSchema managed by Flyway.\nInit: docker/init-main-db.sql" as maindb <<database>>
 
-        database "**keycloak db**\n\nKeycloak internal state.\nRealms, users, clients,\nsessions, tokens.\n\nAccessed by: Keycloak" as keycloakdb <<database>>
+        database "**postgres-keycloak**\n\nkeycloak db → Keycloak\n\nKeycloak manages its own schema.\n\nDev: Docker container.\nProd: external (KEYCLOAK_DB_HOST)." as keycloakdb <<database>>
 
-        database "**logsdb**\n\nRequest audit trail.\ntable: request_log\n  id, method, path, status,\n  duration_ms, username,\n  timestamp\n\nAccessed by: Log Consumer" as logsdb <<database>>
-    }
-
-    ' ── Post-install Jobs ─────────────────────────────────
-    package "Post-Install Helm Jobs (run once on deploy)" #FAFAFA {
-        component "postgres-init\n(hook-weight 5)\nRuns SQL init script\nto create maindb schema" as jobPostgres <<job>>
-        component "logsdb-init\n(hook-weight 6)\nCreates request_log\ntable in logsdb" as jobLogsdb <<job>>
-        component "keycloak-init\n(hook-weight 10)\nWaits for Keycloak,\ncreates testuser\nin TTB realm via\nAdmin REST API" as jobKeycloak <<job>>
+        database "**postgres-logs**\n\nlogsdb → Log Consumer\n\ntable: request_log\n\nDev: Docker container.\nProd: external (LOGS_DB_HOST).\nSeparate instance: different\nretention policy from app data." as logsdb <<database>>
     }
 }
 
-' ── Request / response flow ────────────────────────────────
-dev        --> portfwd   : HTTP (localhost:8080)
-portfwd    --> ingress   : forwards all traffic
-ingress    --> gateway   : / (all paths)
+' ── External access ───────────────────────────────────────────
+dev --> gateway  : HTTPS :8080\nAuthorization: Bearer <JWT>
+dev --> rabbitmq : management UI :15672
 
-gateway    --> keycloak  : /auth/**\npass-through
-gateway    --> customer  : /api/**\nrate-limited
+' ── All services fetch config at startup ─────────────────────
+gateway       ..> configserver : fetch config
+customer      ..> configserver : fetch config
+accounts      ..> configserver : fetch config
+contacts      ..> configserver : fetch config
+opportunities ..> configserver : fetch config
+activities    ..> configserver : fetch config
+logconsumer   ..> configserver : fetch config
 
-' ── Internal calls ────────────────────────────────────────
-customer   --> keycloak  : fetch JWK keys\n(startup + key rotation)\nhttp://keycloak:8080/auth/...
-customer   --> maindb    : read / write\ncustomer records
-keycloak   --> keycloakdb : read / write\nrealm state
+' ── Gateway routing ───────────────────────────────────────────
+gateway --> keycloak     : /auth/** (pass-through)
+gateway --> customer     : /api/customers/**
+gateway --> accounts     : /api/accounts/**
+gateway --> contacts     : /api/accounts/*/contacts/**
+gateway --> opportunities : /api/opportunities/**
+gateway --> activities   : /api/opportunities/*/activities/**
 
-' ── Async logging ─────────────────────────────────────────
-gateway    --> rabbitmq  : publish RequestLogMessage\n(after response committed)
-rabbitmq   --> logconsumer : deliver message
-logconsumer --> logsdb   : INSERT request_log
+' ── JWT validation — all secured services fetch JWK from Keycloak ──
+note right of keycloak
+  All 5 CRM services validate JWTs
+  by fetching public keys from:
+  http://keycloak:8080/auth/realms/crm/
+  protocol/openid-connect/certs
+  (jwk-set-uri, not issuer-uri)
+end note
 
-' ── Init jobs ─────────────────────────────────────────────
-jobPostgres ..> maindb    : initialise schema
-jobLogsdb   ..> logsdb    : create table
-jobKeycloak ..> keycloak  : create testuser
+' ── DB connections ────────────────────────────────────────────
+customer      --> maindb     : maindb
+accounts      --> maindb     : accountsdb
+contacts      --> maindb     : contactsdb
+opportunities --> maindb     : opportunitiesdb
+activities    --> maindb     : activitiesdb
+keycloak      --> keycloakdb : keycloak db
+logconsumer   --> logsdb     : logsdb
+
+' ── Messaging ─────────────────────────────────────────────────
+gateway       --> rabbitmq   : publish RequestLogMessage\n→ request-logs (after response)
+opportunities --> rabbitmq   : publish StageChangedEvent\n→ opportunity-events (on stage change)
+rabbitmq      --> logconsumer : deliver message\n← request-logs
+
+' ── Internal service call ─────────────────────────────────────
+opportunities ..> activities : POST /activities (audit NOTE)\nJWT forwarded · best-effort
+
+' ── Auth & init ───────────────────────────────────────────────
+keycloakInit  ..> keycloak  : create test users\n(Admin REST API)
+keycloak      --> keycloakdb : read/write realm state
 
 @enduml

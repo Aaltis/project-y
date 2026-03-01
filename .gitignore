@@ -4,6 +4,10 @@
 logs/
 .claude/
 
+# Production secrets — never commit
+.env.prod
+*.env
+
 # Gradle
 .gradle/
 **/build/

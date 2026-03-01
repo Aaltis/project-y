@@ -3,6 +3,7 @@ package fi.breakwaterworks.crm.opportunities.controller;
 import fi.breakwaterworks.crm.opportunities.model.Opportunity;
 import fi.breakwaterworks.crm.opportunities.model.OpportunityStage;
 import fi.breakwaterworks.crm.opportunities.repository.OpportunityRepository;
+import fi.breakwaterworks.crm.opportunities.service.StageAuditService;
 import fi.breakwaterworks.crm.opportunities.service.StageTransitionService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,7 @@ public class OpportunityController {
 
     private final OpportunityRepository opportunityRepository;
     private final StageTransitionService stageTransitionService;
+    private final StageAuditService stageAuditService;
 
     @GetMapping
     public Page<Opportunity> list(
@@ -85,7 +87,8 @@ public class OpportunityController {
 
     @PatchMapping("/{id}/stage")
     @PreAuthorize("@perm.canAccess(#id, authentication)")
-    public ResponseEntity<?> updateStage(@PathVariable UUID id, @RequestBody Map<String, String> body) {
+    public ResponseEntity<?> updateStage(@PathVariable UUID id, @RequestBody Map<String, String> body,
+                                         Authentication auth) {
         OpportunityStage newStage;
         try {
             newStage = OpportunityStage.valueOf(body.get("stage"));
@@ -97,8 +100,16 @@ public class OpportunityController {
                 return ResponseEntity.badRequest()
                         .body("Transition from " + existing.getStage() + " to " + newStage + " is not allowed");
             }
+            if (newStage == OpportunityStage.WON
+                    && (existing.getAmount() == null || existing.getCloseDate() == null)) {
+                return ResponseEntity.badRequest()
+                        .body("Transitioning to WON requires amount and closeDate to be set");
+            }
+            OpportunityStage fromStage = existing.getStage();
             existing.setStage(newStage);
-            return ResponseEntity.ok(opportunityRepository.save(existing));
+            Opportunity saved = opportunityRepository.save(existing);
+            stageAuditService.logStageChange(id, fromStage, newStage, auth);
+            return ResponseEntity.ok(saved);
         }).orElse(ResponseEntity.notFound().build());
     }
 
