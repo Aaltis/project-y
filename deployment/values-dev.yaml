@@ -114,6 +114,11 @@ logConsumer:
   tag: latest
   pullPolicy: Never
 
+configServer:
+  image: config-server
+  tag: latest
+  pullPolicy: Never
+
 logsdb:
   image: postgres:13
   database: logsdb

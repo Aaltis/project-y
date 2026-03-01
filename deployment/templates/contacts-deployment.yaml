@@ -16,26 +16,6 @@ spec:
       - name: contacts
         image: "{{ .Values.contacts.image }}:{{ .Values.contacts.tag }}"
         imagePullPolicy: "{{ .Values.contacts.pullPolicy }}"
-        env:
-        - name: SPRING_APP_NAME
-          value: "Contacts"
-        - name: DATABASE_URL
-          value: "jdbc:postgresql://postgres:5432/contactsdb"
-        - name: DATABASE_USER
-          valueFrom:
-            secretKeyRef:
-              name: app-secret
-              key: main_database_user
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: app-secret
-              key: main_database_password
-        - name: KEYCLOAK_JWK_SET_URI
-          valueFrom:
-            configMapKeyRef:
-              name: app-config
-              key: keycloak_jwk_set_uri
         ports:
         - containerPort: 8082
         readinessProbe:

@@ -11,7 +11,7 @@ and resource-based access control via Keycloak JWT.
 
 | Layer | Choice |
 |-------|--------|
-| Language | Java 21 |
+| Language | Java 17 (dev machine has JDK 17; see debug log) |
 | Framework | Spring Boot 3 |
 | Database | PostgreSQL + Flyway |
 | Auth | Spring Security OAuth2 Resource Server (Keycloak) |
@@ -125,48 +125,56 @@ GET    /api/opportunities/{id}/activities/{activityId}
 DELETE /api/opportunities/{id}/activities/{activityId}
 ```
 
-### Phase 4 — Business Rules ⚠️ PARTIAL
+### Phase 4 — Business Rules ✅ DONE
 
 **Stage transition validation** ✅
 - `OpportunityStage.allowedTransitions()` enforced in controller — forward only, backward to `LOST` ✅
 - Invalid transition returns HTTP 400 ✅
 
-**WON gate validation** ❌ NOT IMPLEMENTED
-- Transitioning to `WON` must require `amount != null` AND `closeDate != null`
-- Currently accepted without these checks
+**WON gate validation** ✅
+- `PATCH /api/opportunities/{id}/stage` checks `amount != null` AND `closeDate != null` before allowing WON ✅
+- Returns HTTP 400 with message if either field is missing ✅
 
-**Audit trail on stage change** ❌ NOT IMPLEMENTED
-- Stage transitions do NOT auto-create an `Activity(type=NOTE, text="Stage changed X→Y by user")`
-- No cross-service call from Opportunities to Activities on stage change
+**Audit trail on stage change** ✅
+- `StageAuditService` makes a best-effort POST to Activities after every successful stage transition ✅
+- Creates `Activity(type=NOTE, text="Stage changed X -> Y by <username>")` ✅
+- Forwards the caller's JWT so Activities can authenticate the internal request ✅
+- Failures are logged and swallowed — stage transition is never blocked by audit failure ✅
+- `ACTIVITIES_URI` env var wired in docker-compose.yml and opportunities-deployment.yaml ✅
 
-**TODO:**
-1. Add WON validation in `OpportunityController.updateStage()` — check `amount` and `closeDate` before allowing
-2. After successful stage transition, POST to Activities service (or use a shared internal call) to create `Activity(type=NOTE, text="Stage changed X→Y by <username>", opportunityId, createdBy)`
+### Phase 5 — RabbitMQ ✅ DONE
 
-### Phase 5 — RabbitMQ ⚠️ PARTIAL
-
-**Request logging via RabbitMQ** ✅ DONE (implemented beyond original spec scope)
+**Request logging via RabbitMQ** ✅
 - Gateway publishes every `/api/*` request to `request-logs` queue ✅
 - LogConsumer persists to `logsdb` ✅
 - Best-effort, no outbox ✅
 
-**Opportunity stage_changed event** ❌ NOT IMPLEMENTED
-- `opportunity.stage_changed` event not published from Opportunities service
-- Infrastructure already exists (RabbitMQ running, pattern established in Gateway)
-- Optional per spec — implement when audit trail (Phase 4) is done
-
-**TODO (optional):**
-- Add `RabbitMQConfig` + `RabbitTemplate` to Opportunities service
-- Publish `{ opportunityId, fromStage, toStage, changedBy, timestamp }` to `opportunity-events` exchange after stage transition
+**Opportunity stage_changed event** ✅
+- `StageAuditService` publishes `StageChangedEvent` to `opportunity-events` queue after every stage transition ✅
+- Payload: `{ opportunityId, fromStage, toStage, changedBy, timestamp }` ✅
+- Best-effort — publish failures are logged and swallowed; stage transition is never blocked ✅
+- `RabbitMQConfig` + `spring-boot-starter-amqp` + `jackson-databind` added to Opportunities service ✅
+- RabbitMQ connection properties in `Config/src/main/resources/config/opportunities.properties` ✅
 
 ### Phase 6 — Deployment ✅ DONE
 
+**Spring Cloud Config Server** ✅
+- `Config/` service (port 8888) — classpath/native backend, single source of truth for all service config
+- Shared properties in `Config/src/main/resources/config/application.properties` (JPA dialect, driver, JWK URI, actuator)
+- Per-service files: `accounts.properties`, `contacts.properties`, `opportunities.properties`, `activities.properties`, `gateway.properties`, `customer.properties`, `log-consumer.properties`
+- All 7 client services stripped to bootstrap-only `application.properties` (`spring.config.import=configserver:http://config-server:8888`)
+- All 7 clients have `spring-cloud-starter-config` + `spring-retry` + `spring-boot-starter-aop` deps; Spring Cloud BOM 2024.0.1
+- Verify config serving: `curl http://localhost:8888/accounts/default`
+
 **Docker Compose** ✅
-- `docker-compose.yml` with all 11 services (gateway, customer, accounts, contacts, opportunities, activities, log-consumer, keycloak, postgres, postgres-keycloak, postgres-logs, rabbitmq)
+- `docker-compose.yml` with all 12 services (config-server + gateway, customer, accounts, contacts, opportunities, activities, log-consumer, keycloak, postgres, postgres-keycloak, postgres-logs, rabbitmq)
+- `config-server` has healthcheck; all 7 app services `depends_on: config-server: condition: service_healthy`
 - `scripts/docker/compose-up.ps1`, `compose-down.ps1`, `system-test.ps1`
 
 **Kubernetes (Helm / Minikube)** ✅
 - `deployment/templates/` has all service Deployments, Services, Ingress, ConfigMaps, Secrets, init Jobs
+- `deployment/templates/config-deployment.yaml` — Deployment + ClusterIP Service on port 8888
+- `deployment/values-dev.yaml` has `configServer` section; K8s clients use `fail-fast=true` + retry (no `depends_on` in K8s)
 - Readiness/liveness probes on `/actuator/health/**`
 - `scripts/kubernetes/env-up.ps1`, `reinstall.ps1`, `env-down.ps1`, `port-forward.ps1`, `system-test.ps1`
 
@@ -694,4 +702,40 @@ for every service before `docker compose up --build`. Bypassing the script loses
 **Key lesson:** Never run `docker compose up --build -d <service>` directly for these services.
 The Dockerfiles are single-stage and depend on a pre-built JAR. Always use `compose-up.ps1`
 (which runs Gradle first) or manually run `gradlew build` before `docker compose up --build`.
+
+---
+
+## Debug Log — All 7 services crash-loop after Config Server added: retry interval error (RESOLVED)
+
+**Symptom:** After introducing Spring Cloud Config Server, all 7 client services crash immediately
+on startup. `docker compose logs accounts` shows:
+```
+java.lang.IllegalArgumentException: Max interval should be > than initial interval
+    at org.springframework.retry.support.RetryTemplateBuilder.exponentialBackoff
+    at org.springframework.cloud.config.client.RetryTemplateFactory.create
+    at org.springframework.cloud.config.client.ConfigClientRetryBootstrapper
+```
+Config server itself is healthy (`Up X hours (healthy)`). All JARs built successfully.
+
+**Root cause:** `RetryTemplateBuilder.exponentialBackoff` requires `maxInterval > initialInterval`
+strictly (not `>=`). Each client's `application.properties` had:
+```properties
+spring.cloud.config.retry.initial-interval=2000
+spring.cloud.config.retry.max-attempts=10
+# max-interval not set → defaults to 2000ms (same as initial-interval)
+```
+Since `2000` is NOT `> 2000`, `RetryTemplateFactory` throws `IllegalArgumentException` before
+the application context can start.
+
+**Fix:** Add `spring.cloud.config.retry.max-interval=10000` to all 7 client `application.properties`:
+```properties
+spring.cloud.config.retry.initial-interval=2000
+spring.cloud.config.retry.max-interval=10000   # must be strictly > initial-interval
+spring.cloud.config.retry.max-attempts=10
+```
+
+**Key lesson:** When configuring Spring Cloud Config retry, always set `max-interval` explicitly
+to a value strictly greater than `initial-interval`. The default `max-interval` is 2000ms — if you
+raise `initial-interval` to 2000ms or above without also raising `max-interval`, the exponential
+backoff builder throws at startup and the service never starts.
 

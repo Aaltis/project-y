@@ -19,24 +19,6 @@ spec:
       - name: gateway
         image: "{{ .Values.gateway.image }}:{{ .Values.gateway.tag }}"
         imagePullPolicy: "{{ .Values.gateway.pullPolicy }}"
-        env:
-        - name: KEYCLOAK_JWK_SET_URI
-          valueFrom:
-            configMapKeyRef:
-              name: app-config
-              key: keycloak_jwk_set_uri
-        - name: CUSTOMER_URI
-          value: "http://customer:8080"
-        - name: KEYCLOAK_URI
-          value: "http://keycloak:8080"
-        - name: RABBITMQ_HOST
-          value: "rabbitmq"
-        - name: RABBITMQ_PORT
-          value: "5672"
-        - name: RABBITMQ_USER
-          value: "{{ .Values.rabbitmq.config.defaultUser }}"
-        - name: RABBITMQ_PASSWORD
-          value: "{{ .Values.rabbitmq.config.defaultPass }}"
         ports:
         - containerPort: 8080
         readinessProbe:

@@ -1,0 +1,110 @@
+# CRM MVP — Development overlay
+#
+# Adds PostgreSQL containers (main app DBs, Keycloak DB, logs DB) and
+# wires depends_on so app services wait for their DB to be healthy.
+#
+# Used automatically by compose-up.ps1 (default -Env dev).
+# Merge command: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — main app databases
+  # (accountsdb, contactsdb, opportunitiesdb, activitiesdb, maindb for customer)
+  # Initialized from docker/init-main-db.sql on first start (empty volume).
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:13
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-main-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Keycloak database
+  # ---------------------------------------------------------------------------
+  postgres-keycloak:
+    image: postgres:13
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      POSTGRES_DB: keycloak
+    volumes:
+      - postgres-keycloak-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Logs database (log-consumer writes request_log here)
+  # ---------------------------------------------------------------------------
+  postgres-logs:
+    image: postgres:13
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loguser
+      POSTGRES_PASSWORD: logpassword
+      POSTGRES_DB: logsdb
+      POSTGRES_HOST_AUTH_METHOD: md5
+    volumes:
+      - postgres-logs-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "loguser"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------------------
+  # depends_on extensions — merge with base file entries
+  # ---------------------------------------------------------------------------
+  keycloak:
+    depends_on:
+      postgres-keycloak:
+        condition: service_healthy
+
+  customer:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  accounts:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  contacts:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  opportunities:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  activities:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  log-consumer:
+    depends_on:
+      postgres-logs:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  postgres-keycloak-data:
+  postgres-logs-data:

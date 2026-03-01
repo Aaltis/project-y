@@ -16,26 +16,6 @@ spec:
       - name: accounts
         image: "{{ .Values.accounts.image }}:{{ .Values.accounts.tag }}"
         imagePullPolicy: "{{ .Values.accounts.pullPolicy }}"
-        env:
-        - name: SPRING_APP_NAME
-          value: "Accounts"
-        - name: DATABASE_URL
-          value: "jdbc:postgresql://postgres:5432/accountsdb"
-        - name: DATABASE_USER
-          valueFrom:
-            secretKeyRef:
-              name: app-secret
-              key: main_database_user
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: app-secret
-              key: main_database_password
-        - name: KEYCLOAK_JWK_SET_URI
-          valueFrom:
-            configMapKeyRef:
-              name: app-config
-              key: keycloak_jwk_set_uri
         ports:
         - containerPort: 8081
         readinessProbe:
