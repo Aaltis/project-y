@@ -223,6 +223,20 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
+  # Projects service  (PMBOK project management — port 8085 internally)
+  # ---------------------------------------------------------------------------
+  projects:
+    build:
+      context: ./Projects
+    image: projects:latest
+    restart: unless-stopped
+    ports:
+      - "8085:8085"
+    depends_on:
+      config-server:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
   # Log Consumer  (no HTTP port — consumes from RabbitMQ only)
   # ---------------------------------------------------------------------------
   log-consumer:

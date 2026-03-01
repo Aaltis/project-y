@@ -1,0 +1,679 @@
+@startuml database
+'
+' Project Y — Full Database Schema
+'
+' Render:
+'   docker run --rm -v "${PWD}/docs:/data" plantuml/plantuml /data/database.puml
+'   VS Code: Alt+D with PlantUML extension
+'
+' Databases
+'   postgres (main)  — one PostgreSQL instance, five logical databases, one init script
+'   projectsdb       — dedicated PostgreSQL database for the PMBOK Projects service
+'   logsdb           — dedicated PostgreSQL database for the request audit log
+'   keycloak db      — owned entirely by Keycloak, not shown here
+'
+' Cross-service identity
+'   user_id / owner_id / created_by / approver_id fields are all Keycloak JWT "sub" UUIDs.
+'   No FK across service boundaries — services share identity but not DB connections.
+'
+
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam linetype ortho
+skinparam nodesep 40
+skinparam ranksep 60
+skinparam padding 4
+
+skinparam entity {
+    BackgroundColor #FFFFFF
+    BorderColor     #555555
+    FontSize        11
+}
+
+skinparam package {
+    BackgroundColor #F5F5F5
+    BorderColor     #AAAAAA
+    FontSize        12
+    FontStyle       bold
+}
+
+' ─────────────────────────────────────────────────────────────────────────────
+' LEGEND / CONVENTIONS
+' ─────────────────────────────────────────────────────────────────────────────
+legend right
+  **Column conventions**
+  ""*"" = NOT NULL (required)
+  ""<<PK>>"" = Primary key (UUID, gen_random_uuid())
+  ""<<FK>>"" = Foreign key
+  ""<<enum>>"" = stored as VARCHAR, enforced by application
+  ---
+  **Cross-service identity**
+  user_id / owner_id / created_by
+  are Keycloak JWT ""sub"" UUIDs.
+  No DB foreign keys cross service
+  boundaries — only application-level
+  conventions link them.
+endlegend
+
+' =============================================================================
+' CRM SERVICE DATABASES  (all on the same PostgreSQL instance "postgres/main")
+' =============================================================================
+' Why one instance, five logical databases?
+'   A single Postgres container is simpler to operate in dev (one volume, one
+'   healthcheck) while still giving each service its own schema namespace and
+'   Flyway migration history. In production the databases can be moved to
+'   separate hosts without changing application code.
+
+package "postgres (main instance)\nCRM service databases" #E8F5E9 {
+
+    ' ── accountsdb ───────────────────────────────────────────────────────────
+    ' Central CRM record. ownerId links to the Keycloak user who owns the
+    ' account. Access control is enforced by PermissionService comparing
+    ' ownerId to the JWT sub — not by a DB-level mechanism.
+    package "accountsdb" #D4EFDF {
+        entity account {
+            * id         : UUID <<PK>>
+            --
+            * name       : VARCHAR(255)
+            * owner_id   : VARCHAR(255)
+            '  ^ Keycloak sub of the creating user.
+            '    crm_admin sees all; crm_sales sees own only.
+            * created_at : TIMESTAMP
+        }
+
+        note bottom of account
+          **Why owner_id is a VARCHAR (not UUID FK)?**
+          Keycloak lives in a separate DB. Storing the sub as
+          VARCHAR avoids a cross-service FK that would couple
+          the schema to Keycloak's internal tables.
+        end note
+    }
+
+    ' ── contactsdb ───────────────────────────────────────────────────────────
+    ' Contacts are owned by an account, not directly by a user. The service
+    ' inherits the account's access control — if you can see the account,
+    ' you can see its contacts.
+    package "contactsdb" #D5E8D4 {
+        entity contact {
+            * id         : UUID <<PK>>
+            --
+            * account_id : UUID
+            '  ^ References account.id (cross-DB; FK by convention only)
+            * name       : VARCHAR(255)
+              email      : VARCHAR(255)
+              phone      : VARCHAR(50)
+        }
+    }
+
+    ' ── opportunitiesdb ──────────────────────────────────────────────────────
+    ' Core sales pipeline record. The stage enum drives the forward-only
+    ' state machine. amount and close_date are required before WON.
+    package "opportunitiesdb" #DDEEFF {
+        entity opportunity {
+            * id           : UUID <<PK>>
+            --
+            * account_id   : UUID
+            '  ^ Cross-DB reference to account
+            * name         : VARCHAR(255)
+              amount       : NUMERIC(19,2)
+            '  ^ Required before transitioning to WON
+              close_date   : DATE
+            '  ^ Required before transitioning to WON
+            * stage        : VARCHAR(20) <<enum>>
+            '  ^ PROSPECT|QUALIFY|PROPOSE|NEGOTIATE|WON|LOST
+            '    Forward-only transitions enforced by application.
+            * owner_id     : VARCHAR(255)
+            * updated_at   : TIMESTAMP
+        }
+
+        note bottom of opportunity
+          **Stage machine** (enforced in OpportunityStage.allowedTransitions())
+          PROSPECT → QUALIFY → PROPOSE → NEGOTIATE → WON
+          Any stage → LOST at any time.
+          WON gate: amount AND close_date must be non-null.
+          Terminal states WON/LOST accept no further transitions.
+        end note
+    }
+
+    ' ── activitiesdb ─────────────────────────────────────────────────────────
+    ' Activity log for an opportunity. Also receives internal POST calls from
+    ' the Opportunities service (stage change audit trail). Both paths use the
+    ' same endpoint — the Opportunities service forwards the caller's JWT.
+    package "activitiesdb" #E8F4E8 {
+        entity activity {
+            * id             : UUID <<PK>>
+            --
+            * opportunity_id : UUID
+            '  ^ Cross-DB reference to opportunity
+            * type           : VARCHAR(20) <<enum>>
+            '  ^ NOTE|CALL|MEETING|TASK
+            * text           : TEXT
+              due_at         : TIMESTAMP
+            * created_by     : VARCHAR(255)
+            '  ^ Keycloak sub (or "system" for automated audit notes)
+            * created_at     : TIMESTAMP
+        }
+    }
+
+    ' ── maindb ───────────────────────────────────────────────────────────────
+    ' Legacy customer service — predates the Accounts/Contacts split.
+    package "maindb" #EEEEFF {
+        entity customer {
+            * id         : UUID <<PK>>
+            --
+            * name       : VARCHAR(255)
+              email      : VARCHAR(255)
+              phone       : VARCHAR(50)
+        }
+
+        note bottom of customer
+          **Legacy service.** The Customer service pre-dates the CRM
+          redesign. New development uses Accounts + Contacts instead.
+          Kept for backwards compatibility with existing integrations.
+        end note
+    }
+}
+
+' ─────────────────────────────────────────────────────────────────────────────
+' PROJECTS SERVICE DATABASE  (dedicated PostgreSQL database "projectsdb")
+' ─────────────────────────────────────────────────────────────────────────────
+' Why a dedicated database?
+'   Project management is a distinct bounded context from CRM. Keeping it
+'   in its own database prevents accidental cross-domain joins, allows
+'   independent scaling, and means the schema can evolve (add columns,
+'   run migrations) without touching CRM data.
+'
+' Why all PMBOK tables in ONE database/service?
+'   The PMBOK lifecycle (Initiation → Planning → Execution → M&C → Closing)
+'   shares identity (project_id, approval records) across phases. Splitting
+'   each phase into its own service would require distributed transactions.
+'   One service + one DB + Flyway migrations keeps the model simple.
+
+' ── projectsdb — PMBOK Projects service :8085 ────────────────────────────────
+' All tables below belong to the same PostgreSQL database (projectsdb).
+
+package "projectsdb · Identity & Access (7.2)" #F3E5F5 {
+
+        entity project_role_assignment {
+            * id         : UUID <<PK>>
+            --
+            * project_id : UUID <<FK>>
+            '  → project.id
+            * user_id    : VARCHAR(255)
+            '  ^ Keycloak sub of the assigned user
+            * role       : VARCHAR(20) <<enum>>
+            '  ^ SPONSOR|PM|TEAM_MEMBER|STAKEHOLDER
+            '    |QA|FINANCE|PROCUREMENT
+        }
+
+    }
+
+package "projectsdb · Approvals (cross-cutting)" #EDE7F6 {
+
+        entity approval {
+            * id            : UUID <<PK>>
+            --
+            * resource_type : VARCHAR(20) <<enum>>
+            '  ^ CHARTER|BASELINE|CHANGE_REQUEST
+            '    |DELIVERABLE|CLOSURE
+            * resource_id   : UUID
+            '  ^ ID of the approved/rejected entity.
+            '    No DB FK — type+id form a polymorphic ref.
+            * requested_by  : VARCHAR(255)
+            '  ^ Keycloak sub of the submitter
+            * approver_id   : VARCHAR(255)
+            '  ^ Keycloak sub of the approver
+            * status        : VARCHAR(10) <<enum>>
+            '  ^ PENDING|APPROVED|REJECTED
+              comment       : TEXT
+            * created_at    : TIMESTAMP
+        }
+
+    }
+
+    ' ══════════════════════════════════════════════════════════
+    ' PHASE 7.3 — INITIATION
+    ' ══════════════════════════════════════════════════════════
+    ' A project starts as DRAFT. The PM writes a charter,
+    ' the SPONSOR approves it, and the project becomes ACTIVE.
+    ' No planning or execution is allowed until ACTIVE.
+
+package "projectsdb · Initiation (7.3)" #FFF9C4 {
+
+        entity project {
+            * id           : UUID <<PK>>
+            --
+            * name         : VARCHAR(255)
+            * sponsor_id   : VARCHAR(255)
+            '  ^ Keycloak sub of the SPONSOR
+            * pm_id        : VARCHAR(255)
+            '  ^ Keycloak sub of the PM (= project creator)
+            * status       : VARCHAR(10) <<enum>>
+            '  ^ DRAFT → ACTIVE → CLOSED
+            '    ACTIVE only after charter APPROVED.
+              start_target : DATE
+              end_target   : DATE
+            * created_at   : TIMESTAMP
+        }
+
+        entity project_charter {
+            * id                : UUID <<PK>>
+            --
+            * project_id        : UUID <<FK>>
+            '  → project.id
+              objectives        : TEXT
+              high_level_scope  : TEXT
+              success_criteria  : TEXT
+              summary_budget    : NUMERIC(19,2)
+              key_risks         : TEXT
+            * status            : VARCHAR(10) <<enum>>
+            '  ^ DRAFT → SUBMITTED → APPROVED
+            '    PM submits; SPONSOR approves.
+        }
+
+        entity stakeholder_register {
+            * id               : UUID <<PK>>
+            --
+            * project_id       : UUID <<FK>>
+            '  → project.id
+            * name             : VARCHAR(255)
+              user_id          : VARCHAR(255)
+            '  ^ Keycloak sub if stakeholder has a system account
+              influence        : VARCHAR(50)
+              interest         : VARCHAR(50)
+              engagement_level : VARCHAR(50)
+        }
+    }
+
+    ' ══════════════════════════════════════════════════════════
+    ' PHASE 7.4 — PLANNING
+    ' ══════════════════════════════════════════════════════════
+    ' WBS (work breakdown) → tasks → cost items form the scope,
+    ' schedule, and cost plans respectively. A baseline_set
+    ' snapshots these three plans as JSON at a point in time.
+    ' Only one APPROVED baseline per version number is allowed.
+
+package "projectsdb · Planning (7.4)" #E3F2FD {
+
+        entity wbs_item {
+            * id          : UUID <<PK>>
+            --
+            * project_id  : UUID <<FK>>
+            '  → project.id
+              parent_id   : UUID <<FK>>
+            '  → wbs_item.id (self-reference for tree structure)
+            * name        : VARCHAR(255)
+              description : TEXT
+              wbs_code    : VARCHAR(50)
+            '  ^ Human-readable code e.g. "1.2.3"
+        }
+
+        entity schedule_task {
+            * id          : UUID <<PK>>
+            --
+            * project_id  : UUID <<FK>>
+            '  → project.id
+              wbs_item_id : UUID <<FK>>
+            '  → wbs_item.id (optional link)
+            * name        : VARCHAR(255)
+              start_date  : DATE
+              end_date    : DATE
+              assignee_id : VARCHAR(255)
+            '  ^ Keycloak sub of assigned team member
+            * status      : VARCHAR(20) <<enum>>
+            '  ^ TODO|IN_PROGRESS|DONE|BLOCKED
+        }
+
+        entity cost_item {
+            * id           : UUID <<PK>>
+            --
+            * project_id   : UUID <<FK>>
+            '  → project.id
+              wbs_item_id  : UUID <<FK>>
+            '  → wbs_item.id (optional, for WBS roll-up)
+              category     : VARCHAR(100)
+            '  ^ e.g. Labor, Travel, Equipment
+              planned_cost : NUMERIC(19,2)
+              actual_cost  : NUMERIC(19,2)
+        }
+
+        entity risk {
+            * id          : UUID <<PK>>
+            --
+            * project_id  : UUID <<FK>>
+            '  → project.id
+            * description : TEXT
+              probability  : VARCHAR(20)
+            '  ^ e.g. LOW|MEDIUM|HIGH (free text)
+              impact       : VARCHAR(20)
+              response     : TEXT
+              owner_id     : VARCHAR(255)
+            '  ^ Keycloak sub of risk owner
+            * status      : VARCHAR(20) <<enum>>
+            '  ^ OPEN|MITIGATED|CLOSED
+        }
+
+        entity quality_checklist {
+            * id         : UUID <<PK>>
+            --
+            * project_id : UUID <<FK>>
+            '  → project.id
+            * name       : VARCHAR(255)
+        }
+
+        entity quality_checklist_item {
+            * id           : UUID <<PK>>
+            --
+            * checklist_id : UUID <<FK>>
+            '  → quality_checklist.id
+            * description  : TEXT
+            * checked      : BOOLEAN
+        }
+
+        entity comms_plan {
+            * id         : UUID <<PK>>
+            --
+            * project_id : UUID <<FK>>
+            '  → project.id
+              audience   : VARCHAR(255)
+              cadence    : VARCHAR(100)
+            '  ^ e.g. "Weekly", "Monthly"
+              channel    : VARCHAR(100)
+            '  ^ e.g. "Email", "Teams"
+        }
+
+        entity procurement_item {
+            * id         : UUID <<PK>>
+            --
+            * project_id : UUID <<FK>>
+            '  → project.id
+            * item       : VARCHAR(255)
+              vendor     : VARCHAR(255)
+              estimate   : NUMERIC(19,2)
+              status     : VARCHAR(50)
+            '  ^ e.g. PLANNED|ORDERED|RECEIVED
+        }
+
+        entity baseline_set {
+            * id                  : UUID <<PK>>
+            --
+            * project_id          : UUID <<FK>>
+            '  → project.id
+            * version             : INTEGER
+            '  ^ Auto-increments per project.
+            '    UNIQUE(project_id, version).
+              scope_snapshot    : TEXT
+            '  ^ JSON array of wbs_item rows at snapshot time
+              schedule_snapshot : TEXT
+            '  ^ JSON array of schedule_task rows
+              cost_snapshot     : TEXT
+            '  ^ JSON array of cost_item rows
+            * status              : VARCHAR(20) <<enum>>
+            '  ^ DRAFT → SUBMITTED → APPROVED
+            '    Once APPROVED the app never UPDATEs this row.
+            * created_by          : VARCHAR(255)
+            '  ^ Keycloak sub
+            * created_at          : TIMESTAMP
+              change_request_id   : UUID <<FK>>
+            '  → change_request.id (set when a SCOPE/SCHEDULE/COST
+            '    CR is approved; the new baseline draft is linked here)
+        }
+
+    }
+
+    ' ══════════════════════════════════════════════════════════
+    ' PHASE 7.5 — EXECUTION
+    ' ══════════════════════════════════════════════════════════
+    ' Team members log work and raise issues.
+    ' Deliverables go through a submit → accept/reject flow.
+    ' Acceptance is recorded in the approval table.
+
+package "projectsdb · Execution (7.5)" #E8F5E9 {
+
+        entity deliverable {
+            * id                  : UUID <<PK>>
+            --
+            * project_id          : UUID <<FK>>
+            '  → project.id
+            * name                : VARCHAR(255)
+              due_date            : DATE
+              acceptance_criteria : TEXT
+            * status              : VARCHAR(20) <<enum>>
+            '  ^ PLANNED → SUBMITTED → ACCEPTED|REJECTED
+            '    Team member submits; SPONSOR or QA accepts/rejects.
+              submitted_by        : VARCHAR(255)
+            '  ^ Keycloak sub — populated on submit, used as
+            '    requested_by in the approval record.
+        }
+
+        entity work_log {
+            * id       : UUID <<PK>>
+            --
+            * task_id  : UUID <<FK>>
+            '  → schedule_task.id
+            '  (project_id derived via schedule_task — no denorm column)
+            * user_id  : VARCHAR(255)
+            '  ^ Keycloak sub of the person who logged the work
+            * log_date : DATE
+            * hours    : NUMERIC(5,2)
+              note     : TEXT
+        }
+
+        entity issue {
+            * id         : UUID <<PK>>
+            --
+            * project_id : UUID <<FK>>
+            '  → project.id
+            * title      : VARCHAR(255)
+            * severity   : VARCHAR(20) <<enum>>
+            '  ^ LOW|MEDIUM|HIGH|CRITICAL
+            * owner_id   : VARCHAR(255)
+            '  ^ Keycloak sub of the person responsible
+            * status     : VARCHAR(20) <<enum>>
+            '  ^ OPEN|IN_PROGRESS|RESOLVED|CLOSED
+        }
+    }
+
+    ' ══════════════════════════════════════════════════════════
+    ' PHASE 7.6 — MONITORING & CONTROLLING
+    ' ══════════════════════════════════════════════════════════
+    ' Change requests follow a multi-step approval workflow.
+    ' When a SCOPE, SCHEDULE, or COST CR is approved, the service
+    ' automatically creates a new DRAFT baseline_set linked to
+    ' that CR via baseline_set.change_request_id.
+    ' The PM can only mark a CR as IMPLEMENTED after the linked
+    ' baseline is APPROVED — ensuring traceability between the
+    ' approved scope/schedule/cost change and the revised plan.
+
+package "projectsdb · Monitoring & Controlling (7.6)" #FFF3E0 {
+
+        entity change_request {
+            * id                   : UUID <<PK>>
+            --
+            * project_id           : UUID <<FK>>
+            '  → project.id
+            * type                 : VARCHAR(20) <<enum>>
+            '  ^ SCOPE|SCHEDULE|COST|QUALITY|RISK
+            '    SCOPE/SCHEDULE/COST trigger new baseline on approval.
+            * description          : TEXT
+              impact_scope         : TEXT
+              impact_schedule_days : INTEGER
+              impact_cost          : NUMERIC(19,2)
+            * submitted_by         : VARCHAR(255)
+            '  ^ Keycloak sub
+            * status               : VARCHAR(20) <<enum>>
+            '  ^ DRAFT → SUBMITTED → IN_REVIEW
+            '    → APPROVED|REJECTED → IMPLEMENTED
+            '    PM submits/reviews; SPONSOR or PM approves.
+            '    IMPLEMENTED requires linked baseline APPROVED.
+            * created_at           : TIMESTAMP
+        }
+
+        entity decision_log {
+            * id            : UUID <<PK>>
+            --
+            * project_id    : UUID <<FK>>
+            '  → project.id
+            * decision      : TEXT
+            '  ^ Free-text description of the decision made
+            * decision_date : DATE
+            * made_by       : VARCHAR(255)
+            '  ^ Keycloak sub of the decision maker
+        }
+
+        entity status_report {
+            * id           : UUID <<PK>>
+            --
+            * project_id   : UUID <<FK>>
+            '  → project.id
+            * period_start : DATE
+            * period_end   : DATE
+              summary      : TEXT
+            * rag_scope    : VARCHAR(10) <<enum>>
+            '  ^ RED|AMBER|GREEN — scope health
+            * rag_schedule : VARCHAR(10) <<enum>>
+            '  ^ RED|AMBER|GREEN — schedule health
+            * rag_cost     : VARCHAR(10) <<enum>>
+            '  ^ RED|AMBER|GREEN — cost health
+              key_risks    : TEXT
+              key_issues   : TEXT
+            * created_by   : VARCHAR(255)
+            '  ^ Keycloak sub of the PM who filed the report
+            * created_at   : TIMESTAMP
+        }
+
+    }
+
+' ── Notes for projectsdb entities ────────────────────────────────────────────
+
+note bottom of project_role_assignment
+  **Why per-project roles instead of Keycloak realm roles?**
+  PMBOK roles (PM, SPONSOR, QA…) are project-scoped:
+  the same person can be PM on one project and
+  STAKEHOLDER on another. Keycloak realm roles are
+  global — they cannot express per-resource membership.
+  This table is the project-level RBAC store.
+  crm_admin bypasses all checks; crm_sales must have
+  an explicit row here to access a project.
+end note
+
+note bottom of approval
+  **Why one polymorphic approval table?**
+  Five different entity types need approval workflows
+  (charter, baseline, CR, deliverable, closure). A single
+  table avoids five approval tables with identical columns.
+  The trade-off is no referential integrity on resource_id;
+  the application enforces the link via the service layer.
+end note
+
+note right of wbs_item
+  **Self-referential parent_id**
+  Allows arbitrary WBS hierarchy
+  (work packages nested inside
+  control accounts, inside phases).
+  NULL parent_id = top-level item.
+end note
+
+note bottom of baseline_set
+  **Why JSON snapshots instead of versioned copies of rows?**
+  A true versioned schema (copy every wbs_item row with a
+  version tag) quadruples table size and complicates queries.
+  JSON blobs capture the exact state at a point in time and
+  are immutable — no UPDATE ever touches an APPROVED baseline.
+  The snapshot is for audit/comparison; active planning uses
+  the live wbs_item/schedule_task/cost_item tables.
+end note
+
+note right of work_log
+  **No project_id column on work_log.**
+  Project membership is derived
+  via task_id → schedule_task.project_id.
+  A JPQL subquery is used to list
+  all work logs for a project without
+  adding a denormalised FK column.
+end note
+
+note bottom of status_report
+  **RAG (Red/Amber/Green) reporting.**
+  Each dimension (scope, schedule, cost) is rated
+  independently so the PM can signal that cost is
+  on track (GREEN) while schedule is slipping (RED)
+  without conflating the three dimensions into one
+  overall status.
+end note
+
+' =============================================================================
+' LOGGING DATABASE  (dedicated PostgreSQL instance "postgres-logs")
+' =============================================================================
+' Separate from the main Postgres instance so request logs can be archived,
+' rotated, or truncated independently without affecting CRM data.
+' Written by the Log Consumer service via RabbitMQ (best-effort, async).
+
+package "postgres-logs\nRequest audit log" #FCE4EC {
+
+    entity request_log {
+        * id          : BIGSERIAL <<PK>>
+        --
+        * method      : VARCHAR(10)
+        '  ^ GET|POST|PUT|PATCH|DELETE
+        * path        : TEXT
+        * status      : INTEGER
+        '  ^ HTTP response status code
+        * duration_ms : BIGINT
+        '  ^ Gateway round-trip time in milliseconds
+          username    : VARCHAR(255)
+        '  ^ JWT preferred_username (NULL for unauthenticated)
+        * created_at  : TIMESTAMP
+    }
+
+    note bottom of request_log
+      **Why a separate Postgres instance?**
+      Log data grows unboundedly and has a different
+      retention policy from business data. A separate
+      instance lets you truncate, archive, or apply
+      a different backup schedule without affecting
+      the CRM or PMBOK data. The Log Consumer writes
+      here via RabbitMQ (async, best-effort) — a
+      temporary RabbitMQ outage does not affect CRM.
+    end note
+}
+
+' =============================================================================
+' RELATIONSHIPS — projectsdb internal
+' =============================================================================
+
+' Identity & project
+project             ||--o{ project_role_assignment : "assigned roles"
+project             ||--o| project_charter          : "has charter"
+project             ||--o{ stakeholder_register     : "registers stakeholders"
+
+' Planning FK chain
+project             ||--o{ wbs_item                : "has WBS items"
+project             ||--o{ schedule_task            : "has tasks"
+project             ||--o{ cost_item               : "has cost items"
+project             ||--o{ risk                    : "has risks"
+project             ||--o{ quality_checklist        : "has checklists"
+project             ||--o{ comms_plan               : "has comms plans"
+project             ||--o{ procurement_item         : "has procurement"
+project             ||--o{ baseline_set             : "has baselines"
+
+wbs_item            ||--o{ wbs_item                : "has children"
+wbs_item            ||--o{ schedule_task            : "decomposes to tasks"
+wbs_item            ||--o{ cost_item               : "costed by"
+
+quality_checklist   ||--o{ quality_checklist_item  : "contains items"
+
+' Execution FK chain
+project             ||--o{ deliverable              : "has deliverables"
+project             ||--o{ issue                   : "has issues"
+schedule_task       ||--o{ work_log                : "logged against"
+
+' Monitoring FK chain
+project             ||--o{ change_request           : "has CRs"
+project             ||--o{ decision_log             : "has decisions"
+project             ||--o{ status_report            : "has reports"
+change_request      ||--o| baseline_set             : "triggers baseline"
+
+' Approval is polymorphic — no FK drawn, linked by resource_type+resource_id
+
+@enduml

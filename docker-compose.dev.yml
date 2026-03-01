@@ -99,6 +99,11 @@ services:
       postgres:
         condition: service_healthy
 
+  projects:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   log-consumer:
     depends_on:
       postgres-logs:

@@ -27,6 +27,9 @@ public class GatewayRoutingConfig {
     @Value("${gateway.routes.activities-uri}")
     private String activitiesUri;
 
+    @Value("${gateway.routes.projects-uri}")
+    private String projectsUri;
+
     @Bean
     public RouteLocator routes(RouteLocatorBuilder builder) {
         return builder.routes()
@@ -55,6 +58,10 @@ public class GatewayRoutingConfig {
             .route("activities", r -> r
                 .path("/api/activities", "/api/activities/**")
                 .uri(activitiesUri))
+            // PMBOK Projects service
+            .route("projects", r -> r
+                .path("/api/projects", "/api/projects/**")
+                .uri(projectsUri))
             // Fallback: remaining /api/** goes to legacy Customer service
             .route("customer", r -> r
                 .path("/api/**")

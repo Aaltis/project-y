@@ -1,23 +1,24 @@
-# system-test.ps1 - End-to-end CRM API tests for Docker Compose stack
+# system-test.ps1 - End-to-end CRM + PMBOK API tests for Docker Compose stack
 #
 # Usage:
 #   .\scripts\docker\system-test.ps1             # run all tests
 #   .\scripts\docker\system-test.ps1 -RateLimit  # also test HTTP 429 rate limiting
+#   .\scripts\docker\system-test.ps1 -SkipCRM    # run only PMBOK tests
+#   .\scripts\docker\system-test.ps1 -SkipPMBOK  # run only CRM tests
 #
 # Tests:
-#   Auth          - login with crm realm, reject unauthenticated requests
-#   Accounts      - CRUD + owner can read/update/delete own; other crm_sales user gets 403
-#   Contacts      - create and list contacts for an account
-#   Opportunities - create, advance stage (valid + invalid transitions)
-#   Activities    - create and list activities for an opportunity
-#   Access control - two crm_sales users; user2 cannot see user1's resources
-#   Log Consumer  - verify requests were logged to logsdb via RabbitMQ
+#   T01-T22   CRM core (auth, accounts, contacts, opportunities, activities, log consumer)
+#   P01-P32   PMBOK Projects module (7.2 identity -> 7.6 monitoring & controlling)
 #
 # Prerequisites:
 #   Stack running: .\scripts\docker\compose-up.ps1
 #   (keycloak-init creates testuser / testuser2 automatically on first start)
 
-param([switch]$RateLimit)
+param(
+    [switch]$RateLimit,
+    [switch]$SkipCRM,
+    [switch]$SkipPMBOK
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -103,6 +104,18 @@ function Get-Token([string]$Username, [string]$Password) {
 
 function AuthHeader([string]$Token) { return @{ Authorization = "Bearer $Token" } }
 
+# Decode JWT payload (Base64Url) and extract the 'sub' claim (Keycloak user UUID)
+function Get-Sub([string]$Token) {
+    $payload = $Token.Split('.')[1]
+    $payload = $payload.Replace('-', '+').Replace('_', '/')
+    switch ($payload.Length % 4) {
+        2 { $payload += '==' }
+        3 { $payload += '='  }
+    }
+    $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($payload))
+    return ($decoded | ConvertFrom-Json).sub
+}
+
 # ============================================================================
 # PREREQ: stack reachable
 # ============================================================================
@@ -127,7 +140,7 @@ if ($r -and $r.StatusCode -eq 200) {
 }
 
 # ============================================================================
-# AUTH
+# AUTH (shared by CRM and PMBOK tests)
 # ============================================================================
 Section "T01: Login as $User1Name (crm_sales) -> access_token"
 $Token1 = Get-Token $User1Name $User1Pass
@@ -150,6 +163,14 @@ if ($r -and $r.StatusCode -eq 401) {
 } else {
     Fail "Expected 401, got $(StatusOf $r)"
 }
+
+# ============================================================================
+# CRM TESTS (T04-T22)
+# ============================================================================
+if ($SkipCRM) {
+    Write-Host "`n==> CRM tests skipped (-SkipCRM)" -ForegroundColor Yellow
+    $AccountId1 = $null; $AccountId2 = $null
+} else {
 
 # ============================================================================
 # ACCOUNTS
@@ -256,7 +277,7 @@ Section "T14: List contacts for account -> includes created contact"
 if ($AccountId1) {
     $r = Invoke-Get -Uri "$BaseUrl/api/accounts/$AccountId1/contacts" -Headers $Auth1
     if ($r -and $r.StatusCode -eq 200) {
-        $count = ($r.Content | ConvertFrom-Json).Count
+        $count = @($r.Content | ConvertFrom-Json).Count
         if ($count -gt 0) { Pass "GET /api/accounts/$AccountId1/contacts -> $count contact(s)" } else { Fail "Expected >=1 contact, got 0" }
     } else {
         Fail "Expected 200, got $(StatusOf $r)"
@@ -325,7 +346,7 @@ Section "T20: List activities for opportunity -> includes created activity"
 if ($OpportunityId) {
     $r = Invoke-Get -Uri "$BaseUrl/api/opportunities/$OpportunityId/activities" -Headers $Auth1
     if ($r -and $r.StatusCode -eq 200) {
-        $count = ($r.Content | ConvertFrom-Json).Count
+        $count = @($r.Content | ConvertFrom-Json).Count
         if ($count -gt 0) { Pass "GET /api/opportunities/$OpportunityId/activities -> $count activity/ies" } else { Fail "Expected >=1 activity, got 0" }
     } else {
         Fail "Expected 200, got $(StatusOf $r)"
@@ -363,11 +384,502 @@ try {
     }
 } finally { Pop-Location }
 
+} # end -not $SkipCRM
+
+# ============================================================================
+# PMBOK PROJECT MANAGEMENT MODULE  (P01-P32)
+# User1 = PM (creates project, manages planning/execution/monitoring)
+# User2 = SPONSOR (approves charter, baselines, accepts deliverables)
+# ============================================================================
+if ($SkipPMBOK) {
+    Write-Host "`n==> PMBOK tests skipped (-SkipPMBOK)" -ForegroundColor Yellow
+} else {
+
+if (-not $Token2) {
+    Write-Host "`n  [WARN] No user2 token - SPONSOR-gated tests will be skipped" -ForegroundColor Yellow
+}
+
+# -----------------------------------------------------------------------
+# PREREQ: extract Keycloak sub UUIDs from JWT (needed for sponsorId / assigneeId)
+# -----------------------------------------------------------------------
+Section "PMBOK Prereq: decode sub UUIDs from JWT"
+$Sub1 = $null; $Sub2 = $null
+if ($Token1) { $Sub1 = Get-Sub $Token1; Pass "$User1Name sub=$Sub1" }
+else         { Fail "No Token1 - cannot run PMBOK tests" }
+if ($Token2) { $Sub2 = Get-Sub $Token2; Pass "$User2Name sub=$Sub2" }
+else         { Skip "No Token2 - SPONSOR tests will be skipped" }
+
+# ============================================================================
+# Phase 7.3: Initiation
+# ============================================================================
+Start-Sleep -Seconds 2
+
+Section "P01: $User1Name creates project ($User2Name as SPONSOR) -> 200"
+$ProjectId = $null
+if ($Sub2) {
+    $body = @{
+        name        = "Test Project Alpha"
+        sponsorId   = $Sub2
+        startTarget = "2026-04-01"
+        endTarget   = "2026-12-31"
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $ProjectId = ($r.Content | ConvertFrom-Json).id
+        if ($ProjectId) { Pass "Project created id=$ProjectId" } else { Fail "No id in response: $($r.Content)" }
+    } else {
+        Fail "POST /api/projects -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No user2 sub for sponsorId" }
+
+Section "P02: $User1Name (PM) reads project -> 200"
+if ($ProjectId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects/$ProjectId" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) { Pass "GET /api/projects/$ProjectId -> 200" } else { Fail "Expected 200, got $(StatusOf $r): $($r.Content)" }
+} else { Skip "No project from P01" }
+
+Section "P03: List project members -> PM and SPONSOR auto-assigned"
+if ($ProjectId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects/$ProjectId/members" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $members    = @($r.Content | ConvertFrom-Json)
+        $hasPm      = $members | Where-Object { $_.role -eq "PM" }
+        $hasSponsor = $members | Where-Object { $_.role -eq "SPONSOR" }
+        if ($hasPm -and $hasSponsor) {
+            Pass "Members: $($members.Count) role(s) - PM and SPONSOR present"
+        } else {
+            Fail "Expected PM and SPONSOR, got: $(($members | ForEach-Object { $_.role }) -join ', ')"
+        }
+    } else {
+        Fail "Expected 200, got $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P04: $User1Name (PM) creates project charter -> 200 (DRAFT)"
+$CharterId = $null
+if ($ProjectId) {
+    $body = @{
+        objectives      = "Deliver CRM project management module"
+        highLevelScope  = "PMBOK-aligned Projects service"
+        successCriteria = "All system tests green"
+        summaryBudget   = 50000
+        keyRisks        = "Integration complexity"
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/charter" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $CharterId = ($r.Content | ConvertFrom-Json).id
+        $status    = ($r.Content | ConvertFrom-Json).status
+        if ($CharterId) { Pass "Charter created id=$CharterId status=$status" } else { Fail "No id in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/charter -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P05: $User1Name (PM) submits charter -> 200 (SUBMITTED)"
+if ($ProjectId -and $CharterId) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/charter/submit" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "SUBMITTED") { Pass "Charter submitted, status=$status" } else { Fail "Expected SUBMITTED, got $status" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/charter/submit -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or charter" }
+
+Section "P06: $User2Name (SPONSOR) approves charter -> 200 (project -> ACTIVE)"
+if ($ProjectId -and $Auth2) {
+    $body = @{ comment = "Charter approved" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/charter/approve" -Body $body -ContentType "application/json" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "APPROVED") { Pass "Charter approved, status=$status (project now ACTIVE)" } else { Fail "Expected APPROVED, got $status" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/charter/approve -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or user2 token" }
+
+Section "P07: Non-PM ($User2Name) blocked from submitting charter -> 403 or 400"
+if ($ProjectId -and $Auth2) {
+    # charter is already APPROVED; SPONSOR also lacks PM role -> 403 expected
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/charter/submit" -Body "" -ContentType "application/json" -Headers $Auth2
+    if ($r -and ($r.StatusCode -eq 403 -or $r.StatusCode -eq 400)) {
+        Pass "Non-PM charter/submit blocked -> $(StatusOf $r)"
+    } else {
+        Fail "Expected 403 or 400, got $(StatusOf $r)"
+    }
+} else { Skip "No project or user2 token" }
+
+# ============================================================================
+# Phase 7.4: Planning
+# ============================================================================
+Start-Sleep -Seconds 2
+
+Section "P08: $User1Name (PM) creates WBS item -> 200"
+$WbsItemId = $null
+if ($ProjectId) {
+    $body = @{ name = "1. Requirements"; wbsCode = "1.0"; description = "Gather and document requirements" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/wbs" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $WbsItemId = ($r.Content | ConvertFrom-Json).id
+        if ($WbsItemId) { Pass "WBS item created id=$WbsItemId" } else { Fail "No id in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/wbs -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P09: $User1Name (PM) creates schedule task linked to WBS -> 200"
+$TaskId = $null
+if ($ProjectId) {
+    $body = @{
+        name       = "Implement auth module"
+        wbsItemId  = $WbsItemId
+        startDate  = "2026-04-01"
+        endDate    = "2026-04-30"
+        assigneeId = $Sub2
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/tasks" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $TaskId = ($r.Content | ConvertFrom-Json).id
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($TaskId) { Pass "Task created id=$TaskId status=$status" } else { Fail "No id in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/tasks -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P10: $User1Name (PM) creates cost item -> 200"
+if ($ProjectId) {
+    $body = @{ wbsItemId = $WbsItemId; category = "Labor"; plannedCost = 15000 } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/cost-items" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        Pass "Cost item created"
+    } else {
+        Fail "POST /api/projects/$ProjectId/cost-items -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P11: $User1Name (PM) creates baseline v1 (DRAFT, snapshotting WBS+tasks+costs) -> 200"
+$BaselineV1 = $null
+if ($ProjectId) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/baselines" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $json       = $r.Content | ConvertFrom-Json
+        $BaselineV1 = $json.version
+        $status     = $json.status
+        if ($BaselineV1) { Pass "Baseline v$BaselineV1 created, status=$status" } else { Fail "No version in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/baselines -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P12: $User1Name (PM) submits baseline v1 -> 200 (SUBMITTED)"
+if ($ProjectId -and $BaselineV1) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/baselines/$BaselineV1/submit" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "SUBMITTED") { Pass "Baseline v$BaselineV1 submitted, status=$status" } else { Fail "Expected SUBMITTED, got $status" }
+    } else {
+        Fail "POST .../baselines/$BaselineV1/submit -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or baseline v1" }
+
+Section "P13: $User2Name (SPONSOR) approves baseline v1 -> 200 (APPROVED)"
+if ($ProjectId -and $BaselineV1 -and $Auth2) {
+    $body = @{ comment = "Baseline v1 approved" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/baselines/$BaselineV1/approve" -Body $body -ContentType "application/json" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "APPROVED") { Pass "Baseline v$BaselineV1 approved, status=$status" } else { Fail "Expected APPROVED, got $status" }
+    } else {
+        Fail "POST .../baselines/$BaselineV1/approve -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project, baseline v1, or user2 token" }
+
+# ============================================================================
+# Phase 7.5: Execution
+# ============================================================================
+Start-Sleep -Seconds 2
+
+Section "P14: $User1Name (PM) creates deliverable -> 200 (PLANNED)"
+$DeliverableId = $null
+if ($ProjectId) {
+    $body = @{
+        name               = "Auth Module v1.0"
+        dueDate            = "2026-05-15"
+        acceptanceCriteria = "All auth system tests pass"
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $DeliverableId = ($r.Content | ConvertFrom-Json).id
+        $status        = ($r.Content | ConvertFrom-Json).status
+        if ($DeliverableId) { Pass "Deliverable created id=$DeliverableId status=$status" } else { Fail "No id in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/deliverables -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P15: $User2Name (member) logs 8h work against task -> 200"
+if ($ProjectId -and $TaskId -and $Auth2) {
+    $body = @{ taskId = $TaskId; logDate = "2026-04-10"; hours = 8; note = "Auth setup complete" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/work-logs" -Body $body -ContentType "application/json" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 200) {
+        Pass "Work log created (8h)"
+    } else {
+        Fail "POST /api/projects/$ProjectId/work-logs -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project, task, or user2 token" }
+
+Section "P16: List work logs for project -> includes logged entry"
+if ($ProjectId -and $TaskId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects/$ProjectId/work-logs" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $count = @($r.Content | ConvertFrom-Json).Count
+        if ($count -gt 0) { Pass "Work log list: $count entry/ies" } else { Fail "Expected >=1 work log, got 0" }
+    } else {
+        Fail "GET /api/projects/$ProjectId/work-logs -> $(StatusOf $r)"
+    }
+} else { Skip "No project or task" }
+
+Section "P17: $User1Name (member) creates issue (HIGH severity) -> 200 (OPEN)"
+$IssueId = $null
+if ($ProjectId) {
+    $body = @{ title = "Keycloak timeout on startup"; severity = "HIGH" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/issues" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $IssueId = ($r.Content | ConvertFrom-Json).id
+        $status  = ($r.Content | ConvertFrom-Json).status
+        if ($IssueId) { Pass "Issue created id=$IssueId status=$status" } else { Fail "No id in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/issues -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P18: $User1Name submits deliverable -> 200 (SUBMITTED)"
+if ($ProjectId -and $DeliverableId) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables/$DeliverableId/submit" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "SUBMITTED") { Pass "Deliverable submitted, status=$status" } else { Fail "Expected SUBMITTED, got $status" }
+    } else {
+        Fail "POST .../deliverables/$DeliverableId/submit -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or deliverable" }
+
+Section "P19: $User2Name (SPONSOR) accepts deliverable -> 200 (ACCEPTED)"
+if ($ProjectId -and $DeliverableId -and $Auth2) {
+    $body = @{ comment = "Accepted - all criteria met" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables/$DeliverableId/accept" -Body $body -ContentType "application/json" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "ACCEPTED") { Pass "Deliverable accepted, status=$status" } else { Fail "Expected ACCEPTED, got $status" }
+    } else {
+        Fail "POST .../deliverables/$DeliverableId/accept -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project, deliverable, or user2 token" }
+
+Section "P20: Member updates task status -> IN_PROGRESS"
+if ($ProjectId -and $TaskId) {
+    $body = @{ status = "IN_PROGRESS" } | ConvertTo-Json -Compress
+    $r = Invoke-Patch -Uri "$BaseUrl/api/projects/$ProjectId/tasks/$TaskId" -Body $body -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "IN_PROGRESS") { Pass "Task status -> $status" } else { Fail "Expected IN_PROGRESS, got $status" }
+    } else {
+        Fail "PATCH /api/projects/$ProjectId/tasks/$TaskId -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or task" }
+
+# ============================================================================
+# Phase 7.6: Monitoring & Controlling
+# ============================================================================
+Start-Sleep -Seconds 2
+
+Section "P21: $User1Name creates SCOPE change request -> 200 (DRAFT)"
+$CrId = $null
+if ($ProjectId) {
+    $body = @{
+        type               = "SCOPE"
+        description        = "Add reporting module to project scope"
+        impactScope        = "New reporting bounded context required"
+        impactScheduleDays = 14
+        impactCost         = 5000
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/change-requests" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $CrId   = ($r.Content | ConvertFrom-Json).id
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($CrId) { Pass "CR created id=$CrId status=$status" } else { Fail "No id in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/change-requests -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P22: Submit CR -> 200 (SUBMITTED)"
+if ($ProjectId -and $CrId) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/change-requests/$CrId/submit" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "SUBMITTED") { Pass "CR submitted, status=$status" } else { Fail "Expected SUBMITTED, got $status" }
+    } else {
+        Fail "POST .../change-requests/$CrId/submit -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or CR" }
+
+Section "P23: $User1Name (PM) moves CR to IN_REVIEW -> 200"
+if ($ProjectId -and $CrId) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/change-requests/$CrId/review" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "IN_REVIEW") { Pass "CR in review, status=$status" } else { Fail "Expected IN_REVIEW, got $status" }
+    } else {
+        Fail "POST .../change-requests/$CrId/review -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or CR" }
+
+Section "P24: $User1Name (PM) approves CR -> 200 (APPROVED, auto-creates baseline v2 DRAFT)"
+if ($ProjectId -and $CrId) {
+    $body = @{ comment = "Scope increase approved" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/change-requests/$CrId/approve" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "APPROVED") { Pass "CR approved, status=$status" } else { Fail "Expected APPROVED, got $status" }
+    } else {
+        Fail "POST .../change-requests/$CrId/approve -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or CR" }
+
+Section "P25: Baseline v2 auto-created (DRAFT) and linked to CR"
+$BaselineV2 = $null
+if ($ProjectId -and $CrId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects/$ProjectId/baselines" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $baselines = $r.Content | ConvertFrom-Json
+        $linked    = $baselines | Where-Object { $_.changeRequestId -eq $CrId }
+        if ($linked) {
+            $BaselineV2 = $linked.version
+            Pass "Baseline v$BaselineV2 linked to CR, status=$($linked.status)"
+        } else {
+            Fail "No baseline linked to CR $CrId. Baselines: $(($baselines | ForEach-Object { "v$($_.version)/$($_.status)" }) -join ', ')"
+        }
+    } else {
+        Fail "GET /api/projects/$ProjectId/baselines -> $(StatusOf $r)"
+    }
+} else { Skip "No project or CR" }
+
+Section "P26: $User1Name (PM) submits baseline v2 -> 200 (SUBMITTED)"
+if ($ProjectId -and $BaselineV2) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/baselines/$BaselineV2/submit" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "SUBMITTED") { Pass "Baseline v$BaselineV2 submitted, status=$status" } else { Fail "Expected SUBMITTED, got $status" }
+    } else {
+        Fail "POST .../baselines/$BaselineV2/submit -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or baseline v2" }
+
+Section "P27: $User2Name (SPONSOR) approves baseline v2 -> 200 (APPROVED)"
+if ($ProjectId -and $BaselineV2 -and $Auth2) {
+    $body = @{ comment = "Revised baseline approved" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/baselines/$BaselineV2/approve" -Body $body -ContentType "application/json" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "APPROVED") { Pass "Baseline v$BaselineV2 approved, status=$status" } else { Fail "Expected APPROVED, got $status" }
+    } else {
+        Fail "POST .../baselines/$BaselineV2/approve -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project, baseline v2, or user2 token" }
+
+Section "P28: $User1Name (PM) implements CR -> 200 (IMPLEMENTED)"
+if ($ProjectId -and $CrId) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/change-requests/$CrId/implement" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "IMPLEMENTED") { Pass "CR implemented, status=$status" } else { Fail "Expected IMPLEMENTED, got $status" }
+    } else {
+        Fail "POST .../change-requests/$CrId/implement -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or CR" }
+
+# Allow rate-limit bucket to refill after the rapid P21-P28 burst
+Start-Sleep -Seconds 2
+
+Section "P29: $User1Name (PM) creates decision log -> 200"
+if ($ProjectId) {
+    $body = @{
+        decision     = "Adopt Spring Cloud Config for centralised configuration"
+        decisionDate = "2026-04-15"
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/decisions" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        Pass "Decision log created"
+    } else {
+        Fail "POST /api/projects/$ProjectId/decisions -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P30: $User1Name (PM) creates status report (ragScope=AMBER) -> 200"
+$ReportId = $null
+if ($ProjectId) {
+    $body = @{
+        periodStart = "2026-04-01"
+        periodEnd   = "2026-04-30"
+        summary     = "Auth module complete. Scope CR approved and implemented."
+        ragScope    = "AMBER"
+        ragSchedule = "GREEN"
+        ragCost     = "GREEN"
+        keyRisks    = "Integration with legacy systems"
+        keyIssues   = "Keycloak timeout resolved"
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/status-reports" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $ReportId  = ($r.Content | ConvertFrom-Json).id
+        $ragScope  = ($r.Content | ConvertFrom-Json).ragScope
+        if ($ReportId) { Pass "Status report created id=$ReportId ragScope=$ragScope" } else { Fail "No id in response" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/status-reports -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P31: List change requests -> CR is IMPLEMENTED"
+if ($ProjectId -and $CrId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects/$ProjectId/change-requests" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $crs   = @($r.Content | ConvertFrom-Json)
+        $found = $crs | Where-Object { $_.id -eq $CrId }
+        if ($found -and $found.status -eq "IMPLEMENTED") {
+            Pass "CR list: $($crs.Count) entry/ies, CR status=$($found.status)"
+        } else {
+            $got = if ($found) { $found.status } else { "not found" }
+            Fail "Expected CR IMPLEMENTED, got: $got"
+        }
+    } else {
+        Fail "GET /api/projects/$ProjectId/change-requests -> $(StatusOf $r)"
+    }
+} else { Skip "No project or CR" }
+
+Section "P32: List status reports -> most recent first, includes AMBER report"
+if ($ProjectId -and $ReportId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects/$ProjectId/status-reports" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $reports = @($r.Content | ConvertFrom-Json)
+        $found   = $reports | Where-Object { $_.id -eq $ReportId }
+        if ($found -and $found.ragScope -eq "AMBER") {
+            Pass "Status reports: $($reports.Count) report(s), report ragScope=$($found.ragScope)"
+        } else {
+            Fail "Expected report with ragScope=AMBER, got: $(($reports | ForEach-Object { $_.ragScope }) -join ', ')"
+        }
+    } else {
+        Fail "GET /api/projects/$ProjectId/status-reports -> $(StatusOf $r)"
+    }
+} else { Skip "No project or report" }
+
+} # end -not $SkipPMBOK
+
 # ============================================================================
 # RATE LIMITING (optional)
 # ============================================================================
 if ($RateLimit) {
-    Section "T23: Rate limiting -> expect HTTP 429 after burst"
+    Section "TRL: Rate limiting -> expect HTTP 429 after burst"
     $got429 = $false
     for ($i = 1; $i -le 10; $i++) {
         $body = @{ name = "Burst$i" } | ConvertTo-Json -Compress

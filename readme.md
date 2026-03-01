@@ -1,4 +1,4 @@
-# Project Y — CRM MVP
+# Project Y — CRM + PMBOK Project Management
 
 ## Architecture Diagram
 
@@ -13,6 +13,22 @@ The full architecture diagram is in [docs/architecture.puml](docs/architecture.p
 
 ![Architecture](docs/architecture.png)
 
+## Database Schema Diagram
+
+The full entity-relationship diagram (all services, all tables, with design notes) is in [docs/database.puml](docs/database.puml).
+Each table group includes inline annotations explaining **what** the table represents and **why** it is designed that way.
+
+Render the same way as the architecture diagram:
+
+```powershell
+# PowerShell
+docker run --rm -v "${PWD}/docs:/data" plantuml/plantuml /data/database.puml
+# Bash
+docker run --rm -v "$(pwd)/docs:/data" plantuml/plantuml /data/database.puml
+```
+
+![Database schema](docs/database.png)
+
 ---
 
 ## Services
@@ -25,6 +41,8 @@ The full architecture diagram is in [docs/architecture.puml](docs/architecture.p
 | **Contacts** | REST API for contacts linked to accounts. |
 | **Opportunities** | REST API for opportunities with stage-transition workflow. |
 | **Activities** | REST API for activities linked to opportunities. |
+| **Projects** | PMBOK-aligned project management service (`:8085`). Manages projects, charters, WBS, tasks, baselines, deliverables, change requests, and status reports. Uses per-project role assignments stored in `projectsdb`. |
+| **Config Server** | Spring Cloud Config Server (`:8888`). Serves centralised `application.properties` to all services at startup; classpath/native backend. |
 | **Keycloak** | Identity provider. Issues JWTs, manages the `crm` realm, roles (`crm_admin`, `crm_sales`). |
 | **RabbitMQ** | Message broker. Decouples gateway from log writing via the `request-logs` queue. |
 | **Log Consumer** | Listens to `request-logs` and writes each request (method, path, status, duration, username) to the logs DB. |
@@ -40,11 +58,16 @@ Browser / Postman / curl
         ▼
   localhost:8080  (Gateway)
         │
-        ├── /auth/**  ──►  Keycloak :8080
-        └── /api/**   ──►  upstream services
+        ├── /auth/**                       ──►  Keycloak :8080
+        ├── /api/accounts/*/contacts/**    ──►  Contacts :8082
+        ├── /api/accounts/**               ──►  Accounts :8081
+        ├── /api/opportunities/*/activities/** ──► Activities :8084
+        ├── /api/opportunities/**          ──►  Opportunities :8083
+        ├── /api/projects/**               ──►  Projects :8085
+        └── /api/customers/**             ──►  Customer :8080
                                │
-                          GlobalFilter
-                          publishes to RabbitMQ "request-logs"
+                          GlobalFilter (all /api/* requests)
+                          rate-limit 5 req/s · publish to RabbitMQ
                                │
                           Log Consumer ──► logsdb
 ```
@@ -213,6 +236,75 @@ This allows any downstream consumer to react to stage changes without polling th
 
 ---
 
+## PMBOK Project Management Module
+
+The `Projects` service (port 8085) adds a PMBOK-aligned project management bounded context on top of the CRM. It has its own PostgreSQL database (`projectsdb`) and follows the same JWT/Spring Security pattern as the other services.
+
+### Project-Level Roles
+
+PMBOK roles are **per-project**, not global Keycloak roles. A user can be PM on one project and STAKEHOLDER on another.
+
+| Role | Permissions |
+|------|-------------|
+| `PM` | Create/manage everything: charter, WBS, tasks, cost items, risks, baselines, deliverables, CRs, decision log, status reports |
+| `SPONSOR` | Approve charter, approve baselines, accept/reject deliverables, approve/reject change requests |
+| `TEAM_MEMBER` | Log work, create issues, submit deliverables, view project data |
+| `QA` | Accept/reject deliverables (same as SPONSOR for deliverable approval) |
+| `STAKEHOLDER`, `FINANCE`, `PROCUREMENT` | View project data |
+
+`crm_admin` bypasses all project-role checks. Roles are stored in `project_role_assignment` and checked by `ProjectPermissionService` (`@Service("projectPerm")`).
+
+When a project is created, the creator is automatically assigned `PM` and the supplied `sponsorId` user is assigned `SPONSOR`. Additional roles are added via `POST /api/projects/{id}/members`.
+
+### PMBOK Lifecycle
+
+```
+POST /api/projects                              → Project DRAFT
+POST /api/projects/{id}/charter                 → Charter DRAFT   (PM)
+POST /api/projects/{id}/charter/submit          → Charter SUBMITTED (PM)
+POST /api/projects/{id}/charter/approve         → Charter APPROVED → Project ACTIVE (SPONSOR)
+
+POST /api/projects/{id}/wbs                     → WBS items       (PM)
+POST /api/projects/{id}/tasks                   → Schedule tasks  (PM)
+POST /api/projects/{id}/cost-items              → Cost plan       (PM)
+POST /api/projects/{id}/baselines               → Baseline DRAFT  (PM, snapshots WBS+tasks+costs as JSON)
+POST /api/projects/{id}/baselines/{v}/submit    → SUBMITTED       (PM)
+POST /api/projects/{id}/baselines/{v}/approve   → APPROVED, immutable (SPONSOR)
+
+PATCH /api/projects/{id}/tasks/{id}             → Update task status (any member)
+POST  /api/projects/{id}/work-logs              → Log hours against a task (any member)
+POST  /api/projects/{id}/deliverables           → Create deliverable PLANNED (PM)
+POST  /api/projects/{id}/deliverables/{id}/submit → SUBMITTED (any member)
+POST  /api/projects/{id}/deliverables/{id}/accept → ACCEPTED + approval record (SPONSOR or QA)
+POST  /api/projects/{id}/deliverables/{id}/reject → REJECTED + approval record (SPONSOR or QA)
+
+POST /api/projects/{id}/change-requests                     → CR DRAFT   (any member)
+POST /api/projects/{id}/change-requests/{id}/submit         → SUBMITTED  (any member)
+POST /api/projects/{id}/change-requests/{id}/review         → IN_REVIEW  (PM)
+POST /api/projects/{id}/change-requests/{id}/approve        → APPROVED   (SPONSOR or PM)
+  └─ if type is SCOPE|SCHEDULE|COST → new baseline DRAFT auto-created and linked to CR
+POST /api/projects/{id}/change-requests/{id}/reject         → REJECTED   (SPONSOR or PM)
+POST /api/projects/{id}/change-requests/{id}/implement      → IMPLEMENTED (PM)
+  └─ requires linked baseline to be APPROVED first
+
+POST /api/projects/{id}/decisions               → Decision log entry (PM)
+POST /api/projects/{id}/status-reports          → RAG status report  (PM)
+```
+
+### Baseline Snapshots
+
+When a baseline is created (`POST /api/projects/{id}/baselines`), the service serialises the current WBS items, schedule tasks, and cost items into three JSON TEXT columns (`scope_snapshot`, `schedule_snapshot`, `cost_snapshot`). Once a baseline reaches `APPROVED` status, the application never issues an UPDATE against that row — it is permanently immutable. This gives an auditable record of what the project scope/schedule/cost looked like at the moment of approval.
+
+### Change Request → Baseline Link
+
+When a change request of type `SCOPE`, `SCHEDULE`, or `COST` is approved, the service automatically creates a new `DRAFT` baseline and sets `baseline_set.change_request_id` to the CR's ID. The PM must then submit and get that baseline approved before the CR can be marked `IMPLEMENTED`. This enforces that every scope/schedule/cost change has a corresponding approved revised plan — traceability is enforced by the state machine, not by policy.
+
+### Polymorphic Approval Record
+
+All approval workflows (charter, baseline, change request, deliverable, closure) write into a single `approval` table with `resource_type` and `resource_id` columns. This avoids five separate approval tables with identical columns. The trade-off is the absence of a database-level FK from `resource_id` to the resource — the service layer enforces the link.
+
+---
+
 ## Messaging (RabbitMQ)
 
 Two queues are in use:
@@ -307,6 +399,38 @@ A deal can be lost at any point in the sales process — after the first call or
 
 ---
 
+### PMBOK Project Management
+
+**Why are PMBOK roles stored in a separate `project_role_assignment` table instead of Keycloak roles?**
+
+Keycloak realm roles are global — they apply to the user across the entire system. PMBOK roles are *per-project*: the same person is PM on project A and STAKEHOLDER on project B simultaneously. Keycloak has no built-in concept of resource-scoped roles without custom extensions. The `project_role_assignment` table (`project_id`, `user_id`, `role`) is the simplest solution that can be queried efficiently and doesn't require Keycloak customisation. The user's Keycloak `sub` UUID is used as `user_id` to link the two systems without a cross-service FK.
+
+**Why is a `SCOPE`, `SCHEDULE`, or `COST` change request automatically linked to a new baseline draft on approval?**
+
+PMBOK requires that approved changes to scope, schedule, or cost result in a revised performance measurement baseline — you cannot have an approved scope change without also having a revised plan that reflects it. Auto-creating the baseline draft on CR approval enforces this rule mechanically: the PM cannot skip straight to `IMPLEMENTED` without going through the baseline approval gate. The link (`baseline_set.change_request_id`) also provides an audit trail — every APPROVED baseline can be traced back to either the original planning phase or a specific approved CR.
+
+**Why does `baseline_set` store snapshots as JSON blobs instead of FK references to the live planning rows?**
+
+A proper versioned schema would copy every `wbs_item`, `schedule_task`, and `cost_item` row with a version tag on approval — but that multiplies table size and complicates queries (every planning query must filter by version). JSON snapshots are written once (at baseline creation), never updated (baselines are immutable once APPROVED), and can be compared or exported without joining across a version dimension. The active planning tables (`wbs_item`, `schedule_task`, `cost_item`) remain unversioned and are fast to query.
+
+**Why is the Projects service a separate microservice rather than adding PMBOK tables to an existing service?**
+
+Project management is a distinct bounded context from CRM. Accounts/Contacts/Opportunities model the sales pipeline; Projects models delivery. They share identity (Keycloak sub) but have no domain-level relationships that would require cross-service joins. Keeping them separate means independent deployability, independent database migrations, and no risk of a PMBOK schema change breaking the CRM. The cost is one more service to operate — acceptable given that it follows the identical pattern (Spring Boot 3, Flyway, OAuth2 RS) as the other services.
+
+**Why is the `approval` table polymorphic (one table for all resource types) rather than one approval table per resource?**
+
+Charter, baseline, change request, deliverable, and closure all need the same approval record: who submitted it, who approved/rejected it, when, and a comment. Five separate tables with identical columns would be pure duplication. The `resource_type` enum (CHARTER / BASELINE / CHANGE_REQUEST / DELIVERABLE / CLOSURE) plus `resource_id` UUID covers all cases in a single table. The trade-off — no database FK from `resource_id` — is acceptable because approvals are always created inside a service transaction that already holds the resource entity, so the link is validated at write time.
+
+**Why does `work_log` not have a `project_id` column?**
+
+A work log is always linked to a `schedule_task`, and every task already carries `project_id`. Adding `project_id` to `work_log` would be a denormalised redundancy — two sources of truth that could drift if a task were ever moved. Instead, querying work logs by project uses a JPQL subquery: `WHERE w.taskId IN (SELECT t.id FROM ScheduleTask t WHERE t.projectId = :projectId)`. The extra join is negligible for the typical number of tasks and work logs per project.
+
+**Why can any project member submit a change request, but only PM or SPONSOR can approve it?**
+
+A team member discovering a scope gap or schedule risk should be able to raise a formal CR without waiting for the PM — bottlenecking CR creation on the PM defeats the purpose of a controlled change process. The multi-step workflow (DRAFT → SUBMITTED → IN_REVIEW by PM → APPROVED/REJECTED by SPONSOR or PM) ensures that every CR is reviewed before approval, even if anyone can initiate one.
+
+---
+
 ### Infrastructure & Docker
 
 **Why Docker Compose overlay files (`docker-compose.dev.yml`, `docker-compose.prod.yml`) instead of a single file with profiles?**
@@ -375,7 +499,9 @@ RabbitMQ management UI: `http://localhost:15672` (guest / guest).
 | `.\scripts\docker\compose-up.ps1 -Services gateway,accounts` | Partial rebuild — listed services only |
 | `.\scripts\docker\compose-down.ps1` | Stop and remove all containers |
 | `.\scripts\docker\compose-down.ps1 -Volumes` | Also wipe all data volumes (full reset) |
-| `.\scripts\docker\system-test.ps1` | End-to-end smoke tests |
+| `.\scripts\docker\system-test.ps1` | End-to-end smoke tests (CRM + PMBOK) |
+| `.\scripts\docker\system-test.ps1 -SkipPMBOK` | CRM tests only |
+| `.\scripts\docker\system-test.ps1 -SkipCRM` | PMBOK tests only |
 
 ### Quick start
 
@@ -713,6 +839,69 @@ Stage transitions: `PROSPECT → QUALIFY → PROPOSE → NEGOTIATE → WON / LOS
 |--------|------|-------------|
 | `POST` | `/api/opportunities/{id}/activities` | Create activity |
 | `GET` | `/api/opportunities/{id}/activities` | List activities |
+
+### Projects (PMBOK module)
+
+All project endpoints require the caller to be a **project member** (have a row in `project_role_assignment`) unless otherwise noted. `crm_admin` bypasses all project-role checks.
+
+#### Project & Members
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/projects` | any JWT | Create project; caller → PM, `sponsorId` → SPONSOR |
+| `GET` | `/api/projects/{id}` | member | Get project |
+| `GET` | `/api/projects/{id}/members` | member | List role assignments |
+| `POST` | `/api/projects/{id}/members` | PM | Add member with role |
+
+#### Charter (Initiation)
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/projects/{id}/charter` | PM | Create charter (DRAFT) |
+| `POST` | `/api/projects/{id}/charter/submit` | PM | Submit for approval |
+| `POST` | `/api/projects/{id}/charter/approve` | SPONSOR | Approve → project becomes ACTIVE |
+
+#### Planning
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/projects/{id}/wbs` | PM | Add WBS item |
+| `GET` | `/api/projects/{id}/wbs` | member | List WBS items |
+| `POST` | `/api/projects/{id}/tasks` | PM | Create schedule task |
+| `GET` | `/api/projects/{id}/tasks` | member | List tasks |
+| `PATCH` | `/api/projects/{id}/tasks/{taskId}` | member | Update task status |
+| `POST` | `/api/projects/{id}/cost-items` | PM | Add cost item |
+| `GET` | `/api/projects/{id}/cost-items` | member | List cost items |
+| `POST` | `/api/projects/{id}/baselines` | PM | Create baseline (snapshots current WBS/tasks/costs) |
+| `GET` | `/api/projects/{id}/baselines` | member | List baselines |
+| `POST` | `/api/projects/{id}/baselines/{version}/submit` | PM | Submit baseline |
+| `POST` | `/api/projects/{id}/baselines/{version}/approve` | SPONSOR | Approve baseline (immutable after this) |
+
+#### Execution
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/projects/{id}/deliverables` | PM | Create deliverable (PLANNED) |
+| `GET` | `/api/projects/{id}/deliverables` | member | List deliverables |
+| `POST` | `/api/projects/{id}/deliverables/{did}/submit` | member | Submit for acceptance |
+| `POST` | `/api/projects/{id}/deliverables/{did}/accept` | SPONSOR or QA | Accept → ACCEPTED + approval record |
+| `POST` | `/api/projects/{id}/deliverables/{did}/reject` | SPONSOR or QA | Reject → REJECTED + approval record |
+| `POST` | `/api/projects/{id}/work-logs` | member | Log hours against a task |
+| `GET` | `/api/projects/{id}/work-logs` | member | List work logs for project |
+| `POST` | `/api/projects/{id}/issues` | member | Create issue |
+| `GET` | `/api/projects/{id}/issues` | member | List issues |
+
+#### Monitoring & Controlling
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/api/projects/{id}/change-requests` | member | Create CR (DRAFT) |
+| `GET` | `/api/projects/{id}/change-requests` | member | List CRs |
+| `GET` | `/api/projects/{id}/change-requests/{cid}` | member | Get CR |
+| `POST` | `/api/projects/{id}/change-requests/{cid}/submit` | member | DRAFT → SUBMITTED |
+| `POST` | `/api/projects/{id}/change-requests/{cid}/review` | PM | SUBMITTED → IN_REVIEW |
+| `POST` | `/api/projects/{id}/change-requests/{cid}/approve` | SPONSOR or PM | IN_REVIEW → APPROVED (SCOPE/SCHEDULE/COST auto-creates baseline) |
+| `POST` | `/api/projects/{id}/change-requests/{cid}/reject` | SPONSOR or PM | IN_REVIEW → REJECTED |
+| `POST` | `/api/projects/{id}/change-requests/{cid}/implement` | PM | APPROVED → IMPLEMENTED (linked baseline must be APPROVED) |
+| `POST` | `/api/projects/{id}/decisions` | PM | Add decision log entry |
+| `GET` | `/api/projects/{id}/decisions` | member | List decision log |
+| `POST` | `/api/projects/{id}/status-reports` | PM | Create RAG status report |
+| `GET` | `/api/projects/{id}/status-reports` | member | List status reports (newest first) |
 
 ### Customers (legacy)
 | Method | Path | Description |

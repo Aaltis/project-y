@@ -232,17 +232,17 @@ approval(id, resource_type, resource_id, requested_by, approver_id, status, comm
 
 ### Implementation order
 
-#### Step 7.1 — Scaffold + infrastructure
+#### Step 7.1 — Scaffold + infrastructure ✅ DONE
 
-- Create `Projects/` with `build.gradle`, `settings.gradle`, `dockerfile` (same pattern as `Accounts/`)
-- `application.properties`: port 8085, datasource `projectsdb`, `jwk-set-uri` same as other services
-- Add `projectsdb` to `docker/init-main-db.sql` and the Kubernetes `maindb_configmap_init_sql.yaml`
-- Add `projects` service to `docker-compose.yml` (port 8085 internal, env vars same pattern)
-- Add `projects-deployment.yaml` Helm template
-- Add `/api/projects/**` route to `Gateway/src/main/java/.../gateway/config/GatewayRoutingConfig.java`
-- Add `projects` build block to `scripts/docker/compose-up.ps1` and `scripts/kubernetes/reinstall.ps1`
+- `Projects/` service with `build.gradle`, `settings.gradle`, `dockerfile` ✅
+- Port 8085, datasource `projectsdb`, `jwk-set-uri`, Spring Cloud Config client ✅
+- `projectsdb` in `docker/init-main-db.sql` ✅
+- `projects` service in `docker-compose.yml` ✅
+- `projects-deployment.yaml` Helm template ✅
+- `/api/projects/**` route in `GatewayRoutingConfig.java` ✅
+- `scripts/docker/compose-up.ps1` updated ✅
 
-#### Step 7.2 — Identity & Access
+#### Step 7.2 — Identity & Access ✅ DONE
 
 Flyway migration `V1__project_role_assignment.sql`:
 ```sql
@@ -257,7 +257,7 @@ CREATE TABLE project_role_assignment (
 - `ProjectRoleAssignmentRepository` + `ProjectPermissionService`
 - Endpoints: `POST /api/projects/{id}/members`, `GET /api/projects/{id}/members`
 
-#### Step 7.3 — Initiation
+#### Step 7.3 — Initiation ✅ DONE
 
 Flyway migration `V2__initiation.sql` — tables: `project`, `project_charter`, `stakeholder_register`.
 
@@ -283,7 +283,7 @@ Workflow rules:
 Endpoints: `POST /api/projects`, `GET /api/projects/{id}`, `POST /api/projects/{id}/charter`,
 `POST /api/projects/{id}/charter/submit`, `POST /api/projects/{id}/charter/approve`
 
-#### Step 7.4 — Planning (baselines)
+#### Step 7.4 — Planning (baselines) ✅ DONE
 
 Flyway migration `V3__planning.sql` — tables: `wbs_item`, `schedule_task`, `cost_item`,
 `risk`, `quality_checklist`, `comms_plan`, `procurement_item`, `baseline_set`.
@@ -312,7 +312,7 @@ Workflow rules:
 - Approving a baseline creates an `approval` record (`resource_type=BASELINE`)
 - PM submits; Sponsor approves
 
-#### Step 7.5 — Execution
+#### Step 7.5 — Execution ✅ DONE
 
 Flyway migration `V4__execution.sql` — tables: `deliverable`, `work_log`, `issue`.
 
@@ -330,7 +330,7 @@ Workflow rules:
 - Deliverable acceptance stored in `approval` table (`resource_type=DELIVERABLE`)
 - Work log: any TEAM_MEMBER can log against a task assigned to them
 
-#### Step 7.6 — Monitoring & Controlling
+#### Step 7.6 — Monitoring & Controlling ✅ DONE
 
 Flyway migration `V5__monitoring.sql` — tables: `change_request`, `decision_log`, `status_report`.
 
@@ -353,7 +353,7 @@ Workflow rules:
 - CR implementation: PM marks `IMPLEMENTED`; requires linked baseline to be `APPROVED`
 - CR approval stored in `approval` table (`resource_type=CHANGE_REQUEST`)
 
-#### Step 7.7 — Closing
+#### Step 7.7 — Closing ❌ NOT STARTED
 
 Flyway migration `V6__closing.sql` — tables: `closure_report`, `lessons_learned`.
 
@@ -406,15 +406,18 @@ POST /api/projects/{id}/close               → gate check → Project CLOSED
 
 ### Infrastructure checklist for Phase 7
 
-| Task | File(s) |
-|------|---------|
-| Create `Projects/` service scaffold | `Projects/build.gradle`, `Projects/settings.gradle`, `Projects/dockerfile` |
-| Add `projectsdb` init | `docker/init-main-db.sql`, `deployment/templates/maindb_configmap_init_sql.yaml` |
-| Add Gateway route | `Gateway/.../config/GatewayRoutingConfig.java` |
-| Add to docker-compose | `docker-compose.yml` |
-| Add Helm template | `deployment/templates/projects-deployment.yaml` |
-| Add to build scripts | `scripts/docker/compose-up.ps1`, `scripts/kubernetes/reinstall.ps1` |
-| Add system-test cases | `scripts/docker/system-test.ps1`, `scripts/kubernetes/system-test.ps1` |
+| Task | Status | File(s) |
+|------|--------|---------|
+| Create `Projects/` service scaffold | ✅ | `Projects/build.gradle`, `Projects/settings.gradle`, `Projects/dockerfile` |
+| Add `projectsdb` init | ✅ | `docker/init-main-db.sql`, `deployment/templates/maindb_configmap_init_sql.yaml` |
+| Add Gateway route | ✅ | `Gateway/.../config/GatewayRoutingConfig.java` |
+| Add to docker-compose | ✅ | `docker-compose.yml` |
+| Add Helm template | ✅ | `deployment/templates/projects-deployment.yaml` |
+| Add to build scripts | ✅ | `scripts/docker/compose-up.ps1` |
+| Add system-test cases (P01–P32) | ✅ | `scripts/docker/system-test.ps1` |
+| Update architecture diagram | ✅ | `docs/architecture.puml`, `docs/database.puml` |
+
+**System tests: 57 passed, 0 failed** (T01–T22 CRM + P01–P32 PMBOK + TRL rate-limit, 2026-03-01)
 
 ---
 
@@ -738,4 +741,87 @@ spring.cloud.config.retry.max-attempts=10
 to a value strictly greater than `initial-interval`. The default `max-interval` is 2000ms — if you
 raise `initial-interval` to 2000ms or above without also raising `max-interval`, the exponential
 backoff builder throws at startup and the service never starts.
+
+---
+
+## Debug Log — P01 HTTP 500: projectsdb does not exist (RESOLVED)
+
+**Symptom:** `system-test.ps1` PMBOK section: P01 `POST /api/projects` returns HTTP 500. All 31
+subsequent PMBOK tests skip because `$ProjectId` is null. CRM tests (T01–T22) pass fine.
+
+**Root cause:** The Postgres volume predated the Projects service. Docker's postgres image only
+runs `/docker-entrypoint-initdb.d/` scripts on first init (empty data directory). When the volume
+already existed, `docker/init-main-db.sql` (which includes `CREATE DATABASE projectsdb;`) was
+never re-executed. The Projects service crashed on startup with:
+```
+FATAL: database "projectsdb" does not exist
+```
+
+**Fix (one-time — running volume):**
+```powershell
+docker compose exec postgres psql -U postgres -c "CREATE DATABASE projectsdb;"
+docker compose restart projects
+```
+
+**Permanent fix:** `docker/init-main-db.sql` already contains `CREATE DATABASE projectsdb;`.
+A fresh `compose-down -Volumes` + `compose-up` will create it automatically.
+
+**Key lesson:** When adding a new service + database to a project with a long-lived Postgres
+volume, the new `CREATE DATABASE` line in the init script does NOT run automatically. Either
+wipe the volume (`compose-down -Volumes`) or create the database manually on the running instance.
+
+---
+
+## Debug Log — database.puml render error at closing brace (RESOLVED)
+
+**Symptom:** `.\scripts\render-diagrams.ps1` fails on `database.puml`:
+```
+Error line 603 in file: /data/database.puml
+plantuml render failed for database.puml (exit 200)
+```
+Line 603 was `} ' end projectsdb` — the closing brace of the outer `projectsdb` package.
+`architecture.puml` (no entity/ERD content) rendered fine.
+
+**Root cause:** PlantUML v1.2026.1 (`plantuml/plantuml:latest`) has a bug where `note bottom/right
+of <entity>` blocks inside nested packages crash the ERD parser when the enclosing package is not
+the **first** top-level package in the file. The `postgres (main)` package came first — its 3 notes
+rendered fine. The `projectsdb` block was second — all 6 of its notes failed silently, and
+PlantUML reported the error at the outer package's closing brace.
+
+**Attempted fix (partial):** Moving the 6 notes out of their inner packages to just outside
+`} ' end projectsdb` moved the error line but did not resolve it (from 603 to 551).
+
+**Full fix:** Removed the outer `package "projectsdb..." { }` wrapper entirely. The 6 inner
+phase packages (`Identity & Access`, `Approvals`, `Initiation`, `Planning`, `Execution`,
+`Monitoring & Controlling`) became top-level packages with `projectsdb ·` prefixed to their names.
+All entities, relationships, and notes remain unchanged; only the extra nesting level is gone.
+
+**Key lesson:** PlantUML v1.2026.1 does not reliably handle `note` blocks on entities inside
+doubly-nested packages (`package > package > entity`) in ERD diagrams when the outer package is
+not the first in the file. Workaround: keep entity packages at a single nesting level (flat),
+using name prefixes (`"db · Phase"`) to convey grouping visually instead of structural nesting.
+
+---
+
+## Debug Log — PS5 .Count error on single-element JSON response (RESOLVED)
+
+**Symptom:** `system-test.ps1` throws `The property 'Count' cannot be found on this object`
+when a list endpoint returns exactly one item.
+
+**Root cause:** PowerShell 5's `ConvertFrom-Json` returns a `PSCustomObject` (not an array) when
+the JSON response is a single-element array `[{...}]`. Calling `.Count` on a `PSCustomObject`
+throws instead of returning 1.
+
+**Fix:** Wrap `ConvertFrom-Json` in `@()` to force array type regardless of element count:
+```powershell
+# Before (fails on single-item responses):
+$count = ($r.Content | ConvertFrom-Json).Count
+
+# After (PS5 safe):
+$count = @($r.Content | ConvertFrom-Json).Count
+```
+Applied to 5 locations in `scripts/docker/system-test.ps1`.
+
+**Key lesson:** In PowerShell 5, always wrap `ConvertFrom-Json` in `@()` before calling `.Count`
+or iterating with index access. PS7 returns arrays consistently; PS5 does not.
 
