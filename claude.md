@@ -353,7 +353,7 @@ Workflow rules:
 - CR implementation: PM marks `IMPLEMENTED`; requires linked baseline to be `APPROVED`
 - CR approval stored in `approval` table (`resource_type=CHANGE_REQUEST`)
 
-#### Step 7.7 — Closing ❌ NOT STARTED
+#### Step 7.7 — Closing ✅ DONE
 
 Flyway migration `V6__closing.sql` — tables: `closure_report`, `lessons_learned`.
 
@@ -414,10 +414,11 @@ POST /api/projects/{id}/close               → gate check → Project CLOSED
 | Add to docker-compose | ✅ | `docker-compose.yml` |
 | Add Helm template | ✅ | `deployment/templates/projects-deployment.yaml` |
 | Add to build scripts | ✅ | `scripts/docker/compose-up.ps1` |
-| Add system-test cases (P01–P32) | ✅ | `scripts/docker/system-test.ps1` |
+| Add system-test cases (P01–P40) | ✅ | `scripts/docker/system-test.ps1` |
 | Update architecture diagram | ✅ | `docs/architecture.puml`, `docs/database.puml` |
 
 **System tests: 57 passed, 0 failed** (T01–T22 CRM + P01–P32 PMBOK + TRL rate-limit, 2026-03-01)
+**P33–P40 added** for Phase 7.7 — pending run after Docker Desktop restart.
 
 ---
 
@@ -824,4 +825,298 @@ Applied to 5 locations in `scripts/docker/system-test.ps1`.
 
 **Key lesson:** In PowerShell 5, always wrap `ConvertFrom-Json` in `@()` before calling `.Count`
 or iterating with index access. PS7 returns arrays consistently; PS5 does not.
+
+---
+
+## Phase 8 — Frontend ❌ NOT STARTED
+
+React + TypeScript + Vite SPA that talks to the Gateway (`http://localhost:8080`) and authenticates
+via Keycloak. Minimal dependencies — no UI framework, no diagram library.
+
+### Stack
+
+| Layer | Choice |
+|-------|--------|
+| Build | Vite + TypeScript |
+| Routing | `react-router-dom` |
+| Auth | `keycloak-js` (PKCE flow) |
+| Styles | Plain CSS (no framework) |
+| Diagrams | Static PNG via `<img>` (already produced by PlantUML) |
+
+### Environment (`.env`)
+
+```
+VITE_API_BASE=http://localhost:8080
+VITE_KEYCLOAK_URL=http://localhost:8080/auth
+VITE_KEYCLOAK_REALM=crm
+VITE_KEYCLOAK_CLIENT_ID=crm-api
+```
+
+### Pages
+
+| Route | Page | Notes |
+|-------|------|-------|
+| `/login` | Login | "Login with Keycloak" button; on success store token in memory, show username + roles |
+| `/` | Dashboard | Quick links; `/actuator/health` status badges (green/red) for gateway + key services; current token info (username, roles, sub) |
+| `/crm/accounts` | Accounts list | Create account; table of accounts |
+| `/crm/accounts/:id` | Account detail | Contacts (nested list + create); Opportunities (list + create) |
+| `/crm/opportunities` | Opportunities list | Filter by `mine=true`, stage, closingBefore |
+| `/crm/opportunities/:id` | Opportunity detail | Edit fields; stage transition (forward-only, WON gate enforced); activities list (including auto-created NOTE audits) |
+| `/projects` | Projects list | Create project; pick existing project |
+| `/projects/:id` | Project workspace | Left sidebar per-module nav; modules listed below |
+| `/docs/diagrams` | Diagrams | Architecture + Database schema PNGs with click-to-fullscreen and CSS zoom |
+
+### Project workspace modules (`/projects/:id`)
+
+| Module | Actions |
+|--------|---------|
+| Charter | Create (DRAFT) → Submit → Approve (SPONSOR) |
+| WBS & Tasks | Add WBS items; add tasks linked to WBS; update task status |
+| Cost Items | Add/list cost items |
+| Baselines | Create snapshot → Submit → Approve (immutable after); show snapshot JSON |
+| Deliverables | Create PLANNED → Submit → Accept/Reject (SPONSOR or QA) |
+| Change Requests | Draft → Submit → Review (PM) → Approve/Reject; auto-linked baseline shown |
+| Decision Log | Add entry; list |
+| Status Reports | Create RAG report; list newest first |
+| Closing | Create closure report → Submit → Approve (SPONSOR); add lessons learned; Close project (gate enforced) |
+
+### Core frontend files
+
+```
+Frontend/
+  public/
+    diagrams/
+      architecture.png    ← copy from docs/architecture.png on build
+      database.png        ← copy from docs/database.png on build
+  src/
+    main.tsx
+    App.tsx               ← router + KeycloakProvider
+    keycloak.ts           ← keycloak-js init, getToken(), refreshToken()
+    api.ts                ← fetch wrapper: attaches Bearer token, handles 401→redirect, error banner
+    components/
+      Layout.tsx          ← top nav (username, roles, logout button)
+      DataTable.tsx       ← generic table
+      ErrorBanner.tsx     ← inline error display (no toast lib)
+    pages/
+      Login.tsx
+      Dashboard.tsx
+      crm/
+        AccountsList.tsx
+        AccountDetail.tsx
+        OpportunitiesList.tsx
+        OpportunityDetail.tsx
+      projects/
+        ProjectsList.tsx
+        ProjectWorkspace.tsx
+        modules/
+          Charter.tsx
+          WbsTasks.tsx
+          CostItems.tsx
+          Baselines.tsx
+          Deliverables.tsx
+          ChangeRequests.tsx
+          DecisionLog.tsx
+          StatusReports.tsx
+          Closing.tsx
+      docs/
+        Diagrams.tsx      ← <img> + fullscreen modal + CSS zoom
+  .env
+  vite.config.ts
+  tsconfig.json
+  package.json
+```
+
+### Key implementation rules
+
+- All API calls go through `api.ts` — never call `fetch` directly in a component
+- Token stored in memory only (not localStorage) — refreshed before expiry via `keycloak.updateToken()`
+- 401 responses → `keycloak.login()` redirect
+- 403 responses → show `ErrorBanner` with message ("Access denied — check your project role")
+- Stage transitions: validate forward-only and WON gate client-side before sending the request to show instant feedback; server is the authoritative validator
+- Project roles are per-project; fetch member list on workspace load to show/hide action buttons
+- Diagrams page: images live in `public/diagrams/`; add a `scripts/copy-diagrams.ps1` that copies `docs/*.png` to `Frontend/public/diagrams/` as a pre-dev step
+
+### Keycloak client setup (one-time)
+
+The `crm-api` client in Keycloak realm `crm` needs:
+- **Valid redirect URIs**: `http://localhost:5173/*`
+- **Valid post-logout redirect URIs**: `http://localhost:5173/*`
+- **Web origins**: `http://localhost:5173`
+
+These can be added via Keycloak admin UI or by updating the realm JSON at
+`deployment/files/realmconfig/keycloak-crm-realm-config.json`.
+
+### Dev command
+
+```powershell
+cd Frontend
+npm install
+npm run dev   # http://localhost:5173
+```
+
+Requires backend stack running: `.\scripts\docker\compose-up.ps1`
+
+### Infrastructure checklist for Phase 8
+
+| Task | Status |
+|------|--------|
+| Create `Frontend/` scaffold (Vite + TS) | ❌ |
+| Wire `keycloak-js` PKCE login/logout | ❌ |
+| Implement `api.ts` with token attach + 401/403 handling | ❌ |
+| Login page + Dashboard (health badges + token info) | ❌ |
+| CRM pages: Accounts, Contacts, Opportunities, Activities | ❌ |
+| Projects list + workspace shell with sidebar | ❌ |
+| Project modules: Charter, WBS/Tasks, Cost Items, Baselines | ❌ |
+| Project modules: Deliverables, CRs, Decision Log, Status Reports | ❌ |
+| Project module: Closing (closure report + lessons + close) | ❌ |
+| ~~Diagrams page (fullscreen + zoom)~~ | removed — replaced by Phase 9 Dynamic Diagrams |
+| Update Keycloak realm JSON with frontend redirect URIs | ❌ |
+
+---
+
+## Phase 9 — Dynamic Diagrams
+
+Interactive canvas where users can build diagrams from live database entities, draw connections
+between them, and add free-form notes. Diagrams are persisted per-user.
+
+### Architecture decision: new `Diagrams` microservice
+
+All diagram data lives in a dedicated `Diagrams/` service on port 8086 backed by `diagramsdb`.
+Rationale:
+- Diagrams reference entities from every domain (CRM + Projects) — a cross-cutting concern
+- Storing in any existing service would create implicit coupling
+- Same scaffold pattern as the `Projects` service (Spring Boot 3, Flyway, JPA, port 8086)
+- Gateway routes `/api/diagrams/**` → `diagrams:8086`
+
+### Data model
+
+```sql
+-- V1__diagrams.sql
+diagram(id UUID PK, name VARCHAR, owner_id VARCHAR, created_at, updated_at)
+
+diagram_node(
+  id UUID PK,
+  diagram_id UUID FK → diagram,
+  node_key  VARCHAR NOT NULL,      -- client-generated stable key (used in edge references)
+  entity_type VARCHAR,             -- ACCOUNT | CONTACT | OPPORTUNITY | PROJECT |
+                                   -- TASK | RISK | NOTE  (null = free node)
+  entity_id UUID,                  -- FK to the referenced entity (null for NOTE/free nodes)
+  label VARCHAR,                   -- display text; auto-filled on load from entity name
+  x DOUBLE PRECISION,              -- canvas X position
+  y DOUBLE PRECISION,              -- canvas Y position
+  color VARCHAR,                   -- hex string, default per entity_type
+  shape VARCHAR DEFAULT 'RECTANGLE' -- RECTANGLE | CIRCLE | DIAMOND | NOTE
+)
+
+diagram_edge(
+  id UUID PK,
+  diagram_id UUID FK → diagram,
+  source_key VARCHAR NOT NULL,     -- references diagram_node.node_key
+  target_key VARCHAR NOT NULL,
+  label VARCHAR,
+  style VARCHAR DEFAULT 'SOLID'    -- SOLID | DASHED | DOTTED
+)
+```
+
+### API endpoints
+
+```
+GET    /api/diagrams                         list caller's diagrams (crm_admin sees all)
+POST   /api/diagrams          {name}         create empty diagram
+GET    /api/diagrams/{id}                    get diagram with all nodes and edges
+PUT    /api/diagrams/{id}     {name}         rename
+DELETE /api/diagrams/{id}                    delete diagram and all nodes/edges
+
+PUT    /api/diagrams/{id}/canvas             full canvas save — body:
+                                               { nodes: [...], edges: [...] }
+                                             replaces all nodes and edges atomically
+                                             (simple: one write per save, no fine-grained patch)
+```
+
+Canvas body shape:
+```json
+{
+  "nodes": [
+    { "nodeKey": "n1", "entityType": "ACCOUNT", "entityId": "uuid", "label": "Acme Corp",
+      "x": 100, "y": 200, "color": "#3b82f6", "shape": "RECTANGLE" }
+  ],
+  "edges": [
+    { "sourceKey": "n1", "targetKey": "n2", "label": "owns", "style": "SOLID" }
+  ]
+}
+```
+
+### Entity label resolution
+
+On `GET /api/diagrams/{id}`, the Diagrams service returns raw DB data (no cross-service calls).
+The frontend resolves entity labels at render time:
+- On canvas load, collect all `(entityType, entityId)` pairs with a non-null entityId
+- Batch-fetch names: `GET /api/accounts?ids=...`, `GET /api/projects?ids=...`, etc.
+- If entity no longer exists, fall back to stored `label` field
+
+### Frontend library: React Flow (reactflow)
+
+```bash
+npm install reactflow
+```
+
+React Flow handles pan/zoom, node drag, edge drawing, and selection out of the box.
+Custom node types provide domain-specific visuals.
+
+### Frontend pages
+
+**`Frontend/src/pages/diagrams/DiagramsList.tsx`**
+- Table of user's diagrams (name, created, node count)
+- "New Diagram" button — prompts name, creates via POST, navigates to canvas
+- Delete button per row
+
+**`Frontend/src/pages/diagrams/DiagramCanvas.tsx`**
+- Full-screen React Flow canvas (fills viewport below nav)
+- **Left sidebar** — entity search panel:
+  - Type selector: Account / Contact / Opportunity / Project / Task / Risk
+  - Text search input → calls relevant API (e.g. `GET /api/accounts?search=foo`)
+  - Result list — drag an item to the canvas to add it as a node
+- **Toolbar** (top, floating):
+  - Save button (PUT /canvas) with unsaved-changes indicator
+  - Add Note button — adds a free NOTE node at center
+  - Delete Selected button (removes highlighted nodes/edges)
+  - Zoom in / Zoom out / Fit view buttons
+- **Node types** (custom React Flow node components):
+  - `EntityNode` — colored badge showing entity type, label below; color per type:
+    - ACCOUNT → blue `#3b82f6`
+    - CONTACT → purple `#8b5cf6`
+    - OPPORTUNITY → green `#10b981`
+    - PROJECT → orange `#f59e0b`
+    - TASK → gray `#6b7280`
+    - RISK → red `#ef4444`
+  - `NoteNode` — yellow sticky-note style, editable textarea inline
+- **Edge creation** — React Flow built-in: hover node → handle appears → drag to another node
+- **Edge label** — double-click on edge to edit label inline
+- **Auto-save** — debounce 2 s after any change, or explicit Save button
+- **Load** — `GET /api/diagrams/{id}` on mount, then resolve entity labels
+
+**Nav link**: Add `{ to: '/diagrams', label: 'Diagrams' }` to `Layout.tsx` NAV_LINKS
+**Routes**: Add in `App.tsx`:
+```tsx
+<Route path="diagrams" element={<DiagramsList />} />
+<Route path="diagrams/:id" element={<DiagramCanvas />} />
+```
+
+### Infrastructure checklist for Phase 9
+
+| Task | Status | File(s) |
+|------|--------|---------|
+| Scaffold `Diagrams/` service (Spring Boot 3, port 8086) | ❌ | `Diagrams/build.gradle`, `dockerfile` |
+| Add `diagramsdb` to postgres init | ❌ | `docker/init-main-db.sql` |
+| Gateway route `/api/diagrams/**` → `diagrams:8086` | ❌ | `Gateway/.../GatewayRoutingConfig.java` |
+| Add `diagrams` to docker-compose | ❌ | `docker-compose.yml` |
+| Flyway V1: `diagram`, `diagram_node`, `diagram_edge` | ❌ | `Diagrams/.../V1__diagrams.sql` |
+| CRUD endpoints for diagrams | ❌ | `DiagramController.java` |
+| PUT /canvas — atomic node+edge replace | ❌ | `DiagramController.java` |
+| `npm install reactflow` | ❌ | `Frontend/package.json` |
+| `DiagramsList.tsx` | ❌ | `Frontend/src/pages/diagrams/` |
+| `DiagramCanvas.tsx` + node types | ❌ | `Frontend/src/pages/diagrams/` |
+| Entity search sidebar (calls CRM + Projects APIs) | ❌ | inside `DiagramCanvas.tsx` |
+| Entity label resolution on canvas load | ❌ | inside `DiagramCanvas.tsx` |
+| Nav link + routes | ❌ | `Layout.tsx`, `App.tsx` |
 

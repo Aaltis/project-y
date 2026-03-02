@@ -57,7 +57,8 @@ services:
       KC_HEALTH_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
       KC_HOSTNAME_STRICT_HTTPS: "false"
-      KC_PROXY: edge
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_URL: http://localhost:8080
     volumes:
       - ./deployment/files/realmconfig/keycloak-crm-realm-config.json:/opt/keycloak/data/import/crm-realm.json:ro
     healthcheck:
@@ -159,6 +160,23 @@ services:
         condition: service_healthy
       config-server:
         condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Frontend  (Vite dev server — React SPA, HMR enabled)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./Frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./Frontend:/app
+      - /app/node_modules   # keep container node_modules, don't overwrite with host
+    environment:
+      API_PROXY_TARGET: http://gateway:8080
+    depends_on:
+      - gateway
 
   # ---------------------------------------------------------------------------
   # Customer service  (port 8080 internally)

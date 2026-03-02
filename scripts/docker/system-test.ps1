@@ -8,7 +8,9 @@
 #
 # Tests:
 #   T01-T22   CRM core (auth, accounts, contacts, opportunities, activities, log consumer)
-#   P01-P32   PMBOK Projects module (7.2 identity -> 7.6 monitoring & controlling)
+#   P01-P40   PMBOK Projects module (all phases: identity, initiation, planning,
+#             execution, monitoring & controlling, closing)
+#   P01a,P01b  GET /api/projects list (caller sees own projects; SPONSOR sees shared)
 #
 # Prerequisites:
 #   Stack running: .\scripts\docker\compose-up.ps1
@@ -431,6 +433,28 @@ if ($Sub2) {
         Fail "POST /api/projects -> $(StatusOf $r): $($r.Content)"
     }
 } else { Skip "No user2 sub for sponsorId" }
+
+Section "P01a: GET /api/projects list -> includes created project"
+if ($ProjectId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $projects = @($r.Content | ConvertFrom-Json)
+        $found = $projects | Where-Object { $_.id -eq $ProjectId }
+        if ($found) { Pass "List projects -> $($projects.Count) project(s), created project present" }
+        else { Fail "Created project $ProjectId not found in list: $($r.Content)" }
+    } else { Fail "GET /api/projects -> $(StatusOf $r): $($r.Content)" }
+} else { Skip "No project from P01" }
+
+Section "P01b: $User2Name (SPONSOR) can also list the project"
+if ($ProjectId -and $Token2) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 200) {
+        $projects = @($r.Content | ConvertFrom-Json)
+        $found = $projects | Where-Object { $_.id -eq $ProjectId }
+        if ($found) { Pass "User2 list projects -> project visible (SPONSOR assignment works)" }
+        else { Fail "Project $ProjectId not in user2's list: $($r.Content)" }
+    } else { Fail "GET /api/projects as user2 -> $(StatusOf $r): $($r.Content)" }
+} else { Skip "No project or Token2" }
 
 Section "P02: $User1Name (PM) reads project -> 200"
 if ($ProjectId) {
@@ -872,6 +896,128 @@ if ($ProjectId -and $ReportId) {
         Fail "GET /api/projects/$ProjectId/status-reports -> $(StatusOf $r)"
     }
 } else { Skip "No project or report" }
+
+
+# ============================================================================
+# PHASE 7.7 — CLOSING
+# ============================================================================
+
+Section "P33: $User1Name (PM) creates closure report -> 200 (DRAFT)"
+$ClosureReportId = $null
+if ($ProjectId) {
+    $body = @{
+        outcomesSummary   = "All deliverables accepted, scope achieved."
+        budgetActual      = 95000.00
+        scheduleActual    = "Completed 2 days ahead of schedule"
+        acceptanceSummary = "All deliverables formally accepted by sponsor."
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/closure-report" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $obj = $r.Content | ConvertFrom-Json
+        $ClosureReportId = $obj.id
+        if ($obj.status -eq "DRAFT") { Pass "Closure report created id=$ClosureReportId status=DRAFT" }
+        else { Fail "Expected status DRAFT, got $($obj.status)" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/closure-report -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P34: $User1Name (PM) adds lesson learned -> 200"
+$LessonId = $null
+if ($ProjectId) {
+    $body = @{
+        category       = "Planning"
+        whatHappened   = "Early stakeholder alignment reduced rework by 30%."
+        recommendation = "Hold stakeholder alignment workshop at project kick-off."
+    } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/lessons-learned" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $LessonId = ($r.Content | ConvertFrom-Json).id
+        Pass "Lesson learned created id=$LessonId"
+    } else {
+        Fail "POST /api/projects/$ProjectId/lessons-learned -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project from P01" }
+
+Section "P35: $User1Name (PM) submits closure report -> 200 (SUBMITTED)"
+if ($ProjectId -and $ClosureReportId) {
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/closure-report/submit" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "SUBMITTED") { Pass "Closure report submitted, status=$status" }
+        else { Fail "Expected SUBMITTED, got $status" }
+    } else {
+        Fail "POST .../closure-report/submit -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or closure report" }
+
+Section "P36: $User1Name (PM) blocked from approving own closure report -> 403"
+if ($ProjectId -and $ClosureReportId) {
+    $body = @{ comment = "Self-approval attempt" } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/closure-report/approve" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 403) { Pass "PM closure-report/approve blocked -> 403" }
+    else { Fail "Expected 403 (PM not SPONSOR), got $(StatusOf $r)" }
+} else { Skip "No project or closure report" }
+
+Section "P37: testuser2 (SPONSOR) approves closure report -> 200 (APPROVED)"
+if ($ProjectId -and $ClosureReportId) {
+    $body = @{ comment = "All deliverables verified. Project formally closed." } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/closure-report/approve" -Body $body -ContentType "application/json" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "APPROVED") { Pass "Closure report approved, status=$status" }
+        else { Fail "Expected APPROVED, got $status" }
+    } else {
+        Fail "POST .../closure-report/approve -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or closure report" }
+
+Section "P38: $User1Name (PM) closes project before all deliverables accepted -> 400"
+# Deliverable was ACCEPTED in P19, so this should actually succeed if checked.
+# Create a new unaccepted deliverable to trigger the gate rejection.
+$BlockingDeliverableId = $null
+if ($ProjectId) {
+    $body = @{ name = "Unaccepted deliverable (gate test)"; acceptanceCriteria = "Will not be accepted." } | ConvertTo-Json -Compress
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables" -Body $body -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $BlockingDeliverableId = ($r.Content | ConvertFrom-Json).id
+        $r2 = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/close" -Body "" -ContentType "application/json" -Headers $Auth1
+        if ($r2 -and $r2.StatusCode -eq 400) { Pass "Close blocked: unaccepted deliverable -> 400" }
+        else { Fail "Expected 400 (unaccepted deliverable), got $(StatusOf $r2)" }
+    } else {
+        Skip "Could not create blocking deliverable ($(StatusOf $r)) — skipping gate test"
+    }
+} else { Skip "No project from P01" }
+
+Section "P39: Accept blocking deliverable, then close project -> 200 (CLOSED)"
+if ($ProjectId -and $BlockingDeliverableId) {
+    # Submit then accept the blocking deliverable
+    Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables/$BlockingDeliverableId/submit" -Body "" -ContentType "application/json" -Headers $Auth1 | Out-Null
+    Start-Sleep -Milliseconds 300
+    Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables/$BlockingDeliverableId/accept" -Body "" -ContentType "application/json" -Headers $Auth2 | Out-Null
+    Start-Sleep -Milliseconds 300
+    $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/close" -Body "" -ContentType "application/json" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $status = ($r.Content | ConvertFrom-Json).status
+        if ($status -eq "CLOSED") { Pass "Project closed, status=$status" }
+        else { Fail "Expected CLOSED, got $status" }
+    } else {
+        Fail "POST /api/projects/$ProjectId/close -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No project or blocking deliverable" }
+
+Section "P40: List lessons learned -> includes added lesson"
+if ($ProjectId -and $LessonId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/projects/$ProjectId/lessons-learned" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $lessons = @($r.Content | ConvertFrom-Json)
+        $found   = $lessons | Where-Object { $_.id -eq $LessonId }
+        if ($found) { Pass "Lessons learned: $($lessons.Count) entry/ies, lesson found" }
+        else { Fail "Lesson $LessonId not found in list" }
+    } else {
+        Fail "GET /api/projects/$ProjectId/lessons-learned -> $(StatusOf $r)"
+    }
+} else { Skip "No project or lesson" }
 
 } # end -not $SkipPMBOK
 

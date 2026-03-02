@@ -2,6 +2,8 @@ package fi.breakwaterworks.crm.projects.controller;
 
 import fi.breakwaterworks.crm.projects.model.Project;
 import fi.breakwaterworks.crm.projects.repository.ProjectRepository;
+import fi.breakwaterworks.crm.projects.repository.ProjectRoleAssignmentRepository;
+import fi.breakwaterworks.crm.projects.service.ProjectClosingService;
 import fi.breakwaterworks.crm.projects.service.ProjectInitiationService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -15,6 +17,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -23,7 +26,26 @@ import java.util.UUID;
 public class ProjectController {
 
     private final ProjectRepository projectRepository;
+    private final ProjectRoleAssignmentRepository roleAssignmentRepository;
     private final ProjectInitiationService initiationService;
+    private final ProjectClosingService closingService;
+
+    /**
+     * List projects the caller is a member of.
+     * crm_admin sees all projects.
+     */
+    @GetMapping
+    public ResponseEntity<List<Project>> list(Authentication auth) {
+        String sub = sub(auth);
+        boolean isAdmin = auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_crm_admin"));
+        if (isAdmin) {
+            return ResponseEntity.ok(projectRepository.findAll());
+        }
+        List<UUID> ids = roleAssignmentRepository.findByUserId(sub)
+                .stream().map(r -> r.getProjectId()).toList();
+        return ResponseEntity.ok(projectRepository.findAllById(ids));
+    }
 
     /**
      * Create a new project. The caller becomes PM automatically.
@@ -45,6 +67,16 @@ public class ProjectController {
         return projectRepository.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Close the project. PM only.
+     * Gate: closure report APPROVED + all deliverables ACCEPTED.
+     */
+    @PostMapping("/{id}/close")
+    @PreAuthorize("@projectPerm.hasRole(#id, 'PM', authentication)")
+    public ResponseEntity<Project> close(@PathVariable UUID id) {
+        return ResponseEntity.ok(closingService.closeProject(id));
     }
 
     private String sub(Authentication auth) {

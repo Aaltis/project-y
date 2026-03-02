@@ -8,6 +8,11 @@ logs/
 .env.prod
 *.env
 
+# Frontend (Node / Vite)
+Frontend/node_modules/
+Frontend/dist/
+Frontend/.vite/
+
 # Gradle
 .gradle/
 **/build/

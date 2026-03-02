@@ -14,4 +14,6 @@ public interface ProjectRoleAssignmentRepository extends JpaRepository<ProjectRo
     boolean existsByProjectIdAndUserId(UUID projectId, String userId);
 
     boolean existsByProjectIdAndUserIdAndRole(UUID projectId, String userId, ProjectRole role);
+
+    List<ProjectRoleAssignment> findByUserId(String userId);
 }

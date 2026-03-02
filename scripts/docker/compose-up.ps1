@@ -93,6 +93,8 @@ if (-not $SkipBuild) {
             $svcLower = $svc.ToLower()
             if ($ServiceDirs.ContainsKey($svcLower)) {
                 Invoke-GradleBuild $svc $ServiceDirs[$svcLower]
+            } elseif ($svcLower -eq "frontend") {
+                Write-Host "  frontend: no Gradle build needed (Docker image built by compose)" -ForegroundColor DarkGray
             } else {
                 Write-Host "  Warning: unknown service '$svc' - skipping Gradle build" -ForegroundColor Yellow
             }
@@ -132,6 +134,7 @@ if ($Services.Count -gt 0) {
     Write-Host "Services rebuilt and restarted: $($Services -join ', ')" -ForegroundColor Green
 } else {
     Write-Host "Stack started ($Env)." -ForegroundColor Green
+    Write-Host "  Frontend:       http://localhost:5173"
     Write-Host "  API:            http://localhost:8080/api/..."
     Write-Host "  Keycloak admin: http://localhost:8080/auth/admin  (keycloak / keycloak)"
     Write-Host "  Config server:  http://localhost:8888/accounts/default"
