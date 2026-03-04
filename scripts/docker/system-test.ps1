@@ -899,7 +899,7 @@ if ($ProjectId -and $ReportId) {
 
 
 # ============================================================================
-# PHASE 7.7 — CLOSING
+# PHASE 7.7 - CLOSING
 # ============================================================================
 
 Section "P33: $User1Name (PM) creates closure report -> 200 (DRAFT)"
@@ -985,17 +985,19 @@ if ($ProjectId) {
         if ($r2 -and $r2.StatusCode -eq 400) { Pass "Close blocked: unaccepted deliverable -> 400" }
         else { Fail "Expected 400 (unaccepted deliverable), got $(StatusOf $r2)" }
     } else {
-        Skip "Could not create blocking deliverable ($(StatusOf $r)) — skipping gate test"
+        Skip "Could not create blocking deliverable ($(StatusOf $r)) - skipping gate test"
     }
 } else { Skip "No project from P01" }
 
 Section "P39: Accept blocking deliverable, then close project -> 200 (CLOSED)"
 if ($ProjectId -and $BlockingDeliverableId) {
+    # Sleep to let the rate-limit bucket refill after the rapid P38 calls
+    Start-Sleep -Seconds 1
     # Submit then accept the blocking deliverable
     Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables/$BlockingDeliverableId/submit" -Body "" -ContentType "application/json" -Headers $Auth1 | Out-Null
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 500
     Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/deliverables/$BlockingDeliverableId/accept" -Body "" -ContentType "application/json" -Headers $Auth2 | Out-Null
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 500
     $r = Invoke-Post -Uri "$BaseUrl/api/projects/$ProjectId/close" -Body "" -ContentType "application/json" -Headers $Auth1
     if ($r -and $r.StatusCode -eq 200) {
         $status = ($r.Content | ConvertFrom-Json).status

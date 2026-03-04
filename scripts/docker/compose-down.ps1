@@ -20,4 +20,4 @@ try {
 } finally { Pop-Location }
 
 Write-Host "Stack stopped." -ForegroundColor Green
-if ($Volumes) { Write-Host "Volumes removed — all data cleared." -ForegroundColor Yellow }
+if ($Volumes) { Write-Host "Volumes removed - all data cleared." -ForegroundColor Yellow }

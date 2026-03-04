@@ -255,6 +255,18 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
+  # Diagrams service  (interactive canvas diagrams — port 8086 internally)
+  # ---------------------------------------------------------------------------
+  diagrams:
+    build:
+      context: ./Diagrams
+    image: diagrams:latest
+    restart: unless-stopped
+    depends_on:
+      config-server:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
   # Log Consumer  (no HTTP port — consumes from RabbitMQ only)
   # ---------------------------------------------------------------------------
   log-consumer:

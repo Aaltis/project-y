@@ -7,6 +7,8 @@ import OpportunitiesList from './pages/crm/OpportunitiesList'
 import OpportunityDetail from './pages/crm/OpportunityDetail'
 import ProjectsList from './pages/projects/ProjectsList'
 import ProjectWorkspace from './pages/projects/ProjectWorkspace'
+import DiagramsList from './pages/diagrams/DiagramsList'
+import DiagramCanvas from './pages/diagrams/DiagramCanvas'
 
 export default function App() {
   return (
@@ -19,6 +21,8 @@ export default function App() {
         <Route path="crm/opportunities/:id" element={<OpportunityDetail />} />
         <Route path="projects" element={<ProjectsList />} />
         <Route path="projects/:id" element={<ProjectWorkspace />} />
+        <Route path="diagrams" element={<DiagramsList />} />
+        <Route path="diagrams/:id" element={<DiagramCanvas />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

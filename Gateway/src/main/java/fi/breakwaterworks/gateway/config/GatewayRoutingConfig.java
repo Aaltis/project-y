@@ -30,6 +30,9 @@ public class GatewayRoutingConfig {
     @Value("${gateway.routes.projects-uri}")
     private String projectsUri;
 
+    @Value("${gateway.routes.diagrams-uri}")
+    private String diagramsUri;
+
     @Bean
     public RouteLocator routes(RouteLocatorBuilder builder) {
         return builder.routes()
@@ -62,6 +65,10 @@ public class GatewayRoutingConfig {
             .route("projects", r -> r
                 .path("/api/projects", "/api/projects/**")
                 .uri(projectsUri))
+            // Diagrams service
+            .route("diagrams", r -> r
+                .path("/api/diagrams", "/api/diagrams/**")
+                .uri(diagramsUri))
             // Fallback: remaining /api/** goes to legacy Customer service
             .route("customer", r -> r
                 .path("/api/**")

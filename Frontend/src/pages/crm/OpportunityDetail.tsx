@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { apiGet, apiPost, apiPut, ApiError } from '../../api'
+import { apiGet, apiPost, apiPatch, apiPut, ApiError } from '../../api'
 import ErrorBanner from '../../components/ErrorBanner'
 import DataTable from '../../components/DataTable'
 
@@ -74,7 +74,7 @@ export default function OpportunityDetail() {
       return
     }
     try {
-      await apiPost(`/api/opportunities/${id}/stage`, { stage: nextStage })
+      await apiPatch(`/api/opportunities/${id}/stage`, { stage: nextStage })
       loadAll()
     } catch (e) { setError(e instanceof ApiError ? e.message : 'Stage transition failed') }
   }

@@ -81,7 +81,6 @@ export default function Dashboard() {
           <Link to="/crm/accounts" className="btn btn-secondary">CRM Accounts</Link>
           <Link to="/crm/opportunities" className="btn btn-secondary">Opportunities</Link>
           <Link to="/projects" className="btn btn-secondary">Projects</Link>
-          <Link to="/docs/diagrams" className="btn btn-secondary">Architecture Diagrams</Link>
         </div>
       </div>
     </div>

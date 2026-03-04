@@ -73,6 +73,7 @@ $ServiceDirs = @{
     "opportunities" = "$ProjectRoot\Opportunities"
     "activities"    = "$ProjectRoot\Activities"
     "projects"      = "$ProjectRoot\Projects"
+    "diagrams"      = "$ProjectRoot\Diagrams"
 }
 
 # ---------------------------------------------------------------------------

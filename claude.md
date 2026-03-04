@@ -85,7 +85,7 @@ Enums:
 - `OpportunityStage`: `PROSPECT → QUALIFY → PROPOSE → NEGOTIATE → WON | LOST` ✅
 - `ActivityType`: `NOTE, CALL, MEETING, TASK` ✅
 
-**TODO:** Add Flyway migration for indexes on `owner_id`, `account_id`, `opportunity_id` — currently missing.
+**Done:** `V2__indexes.sql` added to Accounts, Contacts, Opportunities, Activities — indexes on `owner_id`, `account_id`, `opportunity_id`, `stage`.
 
 ### Phase 3 — API Endpoints ✅ DONE
 
@@ -828,7 +828,7 @@ or iterating with index access. PS7 returns arrays consistently; PS5 does not.
 
 ---
 
-## Phase 8 — Frontend ❌ NOT STARTED
+## Phase 8 — Frontend ✅ DONE
 
 React + TypeScript + Vite SPA that talks to the Gateway (`http://localhost:8080`) and authenticates
 via Keycloak. Minimal dependencies — no UI framework, no diagram library.
@@ -960,17 +960,17 @@ Requires backend stack running: `.\scripts\docker\compose-up.ps1`
 
 | Task | Status |
 |------|--------|
-| Create `Frontend/` scaffold (Vite + TS) | ❌ |
-| Wire `keycloak-js` PKCE login/logout | ❌ |
-| Implement `api.ts` with token attach + 401/403 handling | ❌ |
-| Login page + Dashboard (health badges + token info) | ❌ |
-| CRM pages: Accounts, Contacts, Opportunities, Activities | ❌ |
-| Projects list + workspace shell with sidebar | ❌ |
-| Project modules: Charter, WBS/Tasks, Cost Items, Baselines | ❌ |
-| Project modules: Deliverables, CRs, Decision Log, Status Reports | ❌ |
-| Project module: Closing (closure report + lessons + close) | ❌ |
+| Create `Frontend/` scaffold (Vite + TS) | ✅ |
+| Wire `keycloak-js` PKCE login/logout | ✅ |
+| Implement `api.ts` with token attach + 401/403 handling | ✅ |
+| Login page + Dashboard (health badges + token info) | ✅ |
+| CRM pages: Accounts, Contacts, Opportunities, Activities | ✅ |
+| Projects list + workspace shell with sidebar | ✅ |
+| Project modules: Charter, WBS/Tasks, Cost Items, Baselines | ✅ |
+| Project modules: Deliverables, CRs, Decision Log, Status Reports | ✅ |
+| Project module: Closing (closure report + lessons + close) | ✅ |
 | ~~Diagrams page (fullscreen + zoom)~~ | removed — replaced by Phase 9 Dynamic Diagrams |
-| Update Keycloak realm JSON with frontend redirect URIs | ❌ |
+| Update Keycloak realm JSON with frontend redirect URIs | ✅ (`"*"` wildcard already in realm config) |
 
 ---
 
@@ -1106,17 +1106,93 @@ Custom node types provide domain-specific visuals.
 
 | Task | Status | File(s) |
 |------|--------|---------|
-| Scaffold `Diagrams/` service (Spring Boot 3, port 8086) | ❌ | `Diagrams/build.gradle`, `dockerfile` |
-| Add `diagramsdb` to postgres init | ❌ | `docker/init-main-db.sql` |
-| Gateway route `/api/diagrams/**` → `diagrams:8086` | ❌ | `Gateway/.../GatewayRoutingConfig.java` |
-| Add `diagrams` to docker-compose | ❌ | `docker-compose.yml` |
-| Flyway V1: `diagram`, `diagram_node`, `diagram_edge` | ❌ | `Diagrams/.../V1__diagrams.sql` |
-| CRUD endpoints for diagrams | ❌ | `DiagramController.java` |
-| PUT /canvas — atomic node+edge replace | ❌ | `DiagramController.java` |
-| `npm install reactflow` | ❌ | `Frontend/package.json` |
-| `DiagramsList.tsx` | ❌ | `Frontend/src/pages/diagrams/` |
-| `DiagramCanvas.tsx` + node types | ❌ | `Frontend/src/pages/diagrams/` |
-| Entity search sidebar (calls CRM + Projects APIs) | ❌ | inside `DiagramCanvas.tsx` |
-| Entity label resolution on canvas load | ❌ | inside `DiagramCanvas.tsx` |
-| Nav link + routes | ❌ | `Layout.tsx`, `App.tsx` |
+| Scaffold `Diagrams/` service (Spring Boot 3, port 8086) | ✅ | `Diagrams/build.gradle`, `dockerfile` |
+| Add `diagramsdb` to postgres init | ✅ | `docker/init-main-db.sql` |
+| Gateway route `/api/diagrams/**` → `diagrams:8086` | ✅ | `Gateway/.../GatewayRoutingConfig.java` |
+| Add `diagrams` to docker-compose | ✅ | `docker-compose.yml` |
+| Flyway V1: `diagram`, `diagram_node`, `diagram_edge` | ✅ | `Diagrams/.../V1__diagrams.sql` |
+| CRUD endpoints for diagrams | ✅ | `DiagramController.java` |
+| PUT /canvas — atomic node+edge replace | ✅ | `DiagramController.java` |
+| `npm install reactflow` | ✅ | `Frontend/package.json` |
+| `DiagramsList.tsx` | ✅ | `Frontend/src/pages/diagrams/` |
+| `DiagramCanvas.tsx` + node types | ✅ | `Frontend/src/pages/diagrams/` |
+| Entity search sidebar (calls CRM + Projects APIs) | ✅ | inside `DiagramCanvas.tsx` |
+| Entity label resolution on canvas load | ✅ | inside `DiagramCanvas.tsx` |
+| Nav link + routes | ✅ | `Layout.tsx`, `App.tsx` |
+
+---
+
+## Known Issues & Improvement Backlog
+
+### High Priority
+
+#### Fix P38 system test flakiness
+**Symptom:** P38 ("close project before all deliverables accepted → 400") intermittently returns 429
+instead of 400. P37 (SPONSOR approves closure report) fires immediately before P38, and together
+with the preceding P36 request they can exceed the 5 req/s Bucket4j gateway rate limit.
+
+**Root cause:** The blocking deliverable (created at P14) is accepted at P19 — the test then needs
+a *second* unaccepted deliverable to block the close at P38. That second deliverable is created
+inside P39's setup block right before the close attempt, firing 3 calls in rapid succession after
+P37's call on the same bucket.
+
+**Fix options:**
+1. Move the blocking deliverable creation to just after P37 with a `Start-Sleep -Seconds 1`
+2. Raise gateway rate limit for test environments from 5 req/s to 20 req/s via config property
+
+#### Rate limiter: switch to per-user bucket
+**Current:** Bucket4j limits by IP — 5 req/s per IP. A single browser opening the Project
+Workspace makes ~6 parallel API calls (project + members + charter + wbs + tasks + baselines).
+This will intermittently 429 for real users.
+
+**Fix:** Resolve the bucket key from the JWT `sub` claim instead of the remote IP, so each
+authenticated user gets their own bucket. The gateway already has the JWT available via
+Spring Security context in the filter chain.
+
+### Medium Priority
+
+#### System tests for Phase 9 (Diagrams service has zero test coverage)
+Add D01–D06 tests to `scripts/docker/system-test.ps1`:
+- D01: create diagram → 200 with id
+- D02: list diagrams → includes created
+- D03: save canvas (2 nodes, 1 edge) → 200, load back and verify count
+- D04: rename diagram → 200
+- D05: testuser2 cannot read testuser's diagram → 404 (not 403 — access check returns 404)
+- D06: delete diagram → 204, list confirms gone
+
+#### Stage 2 — Kubernetes: update Helm chart for new services
+`deployment/templates/` is missing entries for `projects` and `diagrams` services added in
+Phases 7 and 9. Before k3s/kind migration:
+- Add `deployment/templates/projects-deployment.yaml` ✅ (already exists per Phase 7 checklist)
+- Add `deployment/templates/diagrams-deployment.yaml` ❌
+- Add `diagramsdb` to `deployment/templates/maindb_configmap_init_sql.yaml` ❌
+- Add `diagrams` section to `deployment/values-dev.yaml` ❌
+
+#### Missing CRUD on frontend
+- **Contacts:** No edit (PUT) form on AccountDetail — only create/list
+- **Opportunity activities:** No delete button in OpportunityDetail activities list
+- **Diagram nodes:** No inline label rename without full canvas re-save (backend supports it via
+  canvas PUT, but UX has no rename affordance)
+
+### Low Priority
+
+#### Observability
+No distributed tracing across microservice calls. A failed frontend action may touch gateway →
+projects → approval → baseline in sequence with no correlation ID visible.
+
+**Minimal addition:** Micrometer Tracing + Zipkin sidecar. Spring Boot 3 supports this with
+`spring-boot-starter-actuator` + `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-zipkin`
+(no code changes needed — auto-instrumented via `RestTemplate`/WebClient).
+
+#### Frontend TypeScript build not validated
+`npm run dev` starts without type-checking. A broken TypeScript error surfaces only in the browser.
+
+**Fix:** Add `tsc --noEmit` step to `compose-up.ps1` for the frontend service, or add a GitHub
+Actions workflow that runs `cd Frontend && npm ci && npm run build` on every push.
+
+#### Secrets management
+Passwords are plaintext in committed files (`docker-compose.yml`, `Config/.../application.properties`):
+`postgres/postgres`, `guest/guest`, `keycloak/keycloak`. Acceptable for dev/Stage 1.
+For Stage 2+: move to Kubernetes Secrets (`kubectl create secret`) and reference via `secretKeyRef`
+in Helm values. The `docker-compose.prod.yml` + `.env.prod` skeleton is already scaffolded.
 

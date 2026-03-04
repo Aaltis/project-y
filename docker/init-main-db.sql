@@ -7,3 +7,4 @@ CREATE DATABASE contactsdb;
 CREATE DATABASE opportunitiesdb;
 CREATE DATABASE activitiesdb;
 CREATE DATABASE projectsdb;
+CREATE DATABASE diagramsdb;

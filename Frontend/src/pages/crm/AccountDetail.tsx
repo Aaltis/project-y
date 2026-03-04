@@ -55,7 +55,7 @@ export default function AccountDetail() {
   async function createOpportunity(e: React.FormEvent) {
     e.preventDefault()
     try {
-      await apiPost(`/api/accounts/${id}/opportunities`, { name: oName, accountId: id })
+      await apiPost(`/api/opportunities`, { name: oName, accountId: id })
       setOName('')
       setShowOppForm(false)
       loadAll()

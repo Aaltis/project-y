@@ -6,6 +6,7 @@ const NAV_LINKS = [
   { to: '/crm/accounts', label: 'Accounts' },
   { to: '/crm/opportunities', label: 'Opportunities' },
   { to: '/projects', label: 'Projects' },
+  { to: '/diagrams', label: 'Diagrams' },
 ]
 
 export default function Layout() {
