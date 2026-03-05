@@ -71,7 +71,7 @@ package "Docker Compose Network" #F5F5F5 {
 
     ' ── Gateway ──────────────────────────────────────────────
     package "Gateway Layer (port 8080 → host)" #FFFDE7 {
-        component "**Spring Cloud Gateway**\n(reactive / WebFlux)\n\nRouting — first match wins:\n  /auth/**                          → Keycloak\n  /api/accounts/*/contacts/**       → Contacts  :8082\n  /api/accounts/**                  → Accounts  :8081\n  /api/opportunities/*/activities/** → Activities :8084\n  /api/opportunities/**             → Opportunities :8083\n  /api/projects/**                  → Projects  :8085\n  /api/customers/**                 → Customer  :8080\n\nGlobal filter on every /api/* request:\n  1. Extract JWT username (Base64-decode JWT payload)\n  2. Rate-limit: 5 req/s per user (Bucket4j in-memory)\n     → HTTP 429 if exceeded\n  3. Forward to upstream service\n  4. After response: publish RequestLogMessage\n     to request-logs queue (async, best-effort)" as gateway <<gateway>>
+        component "**Spring Cloud Gateway**\n(reactive / WebFlux)\n\nRouting — first match wins:\n  /auth/**                          → Keycloak\n  /api/accounts/*/contacts/**       → Contacts  :8082\n  /api/accounts/**                  → Accounts  :8081\n  /api/opportunities/*/activities/** → Activities :8084\n  /api/opportunities/**             → Opportunities :8083\n  /api/projects/**                  → Projects  :8085\n  /api/customers/**                 → Customer  :8080\n\nGlobal filter on every /api/* request:\n  1. Extract JWT username (Base64-decode JWT payload)\n  2. Rate-limit: 20 req/s per user (Bucket4j in-memory,\n     keyed by JWT preferred_username)\n     → HTTP 429 if exceeded\n  3. Forward to upstream service\n  4. After response: publish RequestLogMessage\n     to request-logs queue (async, best-effort)" as gateway <<gateway>>
     }
 
     ' ── CRM services ─────────────────────────────────────────
@@ -94,12 +94,14 @@ package "Docker Compose Network" #F5F5F5 {
     package "PMBOK Services" #EDE7F6 {
 
         component "**Projects**  :8085\n\nFull PMBOK lifecycle:\n  Initiation   → charter + approval\n  Planning     → WBS, tasks, costs,\n                 risks, baselines\n  Execution    → deliverables, work logs,\n                 issues\n  Monitoring   → CRs, decision log,\n                 RAG status reports\n  Closing      → closure report,\n                 lessons learned\n\nPer-project RBAC:\n  @projectPerm.hasRole(#id,'PM',...)\n  userId = Keycloak JWT sub\n\nDB: projectsdb" as projects <<service>>
+
+        component "**Diagrams**  :8086\n\nUser-owned interactive canvas diagrams.\n\nEndpoints:\n  POST   /api/diagrams          (create)\n  GET    /api/diagrams          (list mine)\n  GET    /api/diagrams/{id}     (load with nodes+edges)\n  PUT    /api/diagrams/{id}     (rename)\n  PUT    /api/diagrams/{id}/canvas  (atomic save)\n  DELETE /api/diagrams/{id}\n\nAccess:\n  crm_admin → sees all diagrams\n  crm_sales → own diagrams only\n  (same @perm pattern as CRM services)\n\nDB: diagramsdb" as diagrams <<service>>
     }
 
     ' ── Databases ────────────────────────────────────────────
     package "Databases (PostgreSQL 13)" #F5F0FF {
 
-        database "**postgres**  (main)\n\nmaindb          → Customer\naccountsdb      → Accounts\ncontactsdb      → Contacts\nopportunitiesdb → Opportunities\nactivitiesdb    → Activities\nprojectsdb      → Projects\n\nDev: Docker container.\nProd: external host (APP_DB_HOST).\n\nSchema managed by Flyway.\nInit: docker/init-main-db.sql" as maindb <<database>>
+        database "**postgres**  (main)\n\nmaindb          → Customer\naccountsdb      → Accounts\ncontactsdb      → Contacts\nopportunitiesdb → Opportunities\nactivitiesdb    → Activities\nprojectsdb      → Projects\ndiagramsdb      → Diagrams\n\nDev: Docker container.\nProd: external host (APP_DB_HOST).\n\nSchema managed by Flyway.\nInit: docker/init-main-db.sql" as maindb <<database>>
 
         database "**postgres-keycloak**\n\nkeycloak db → Keycloak\n\nKeycloak manages its own schema.\n\nDev: Docker container.\nProd: external (KEYCLOAK_DB_HOST)." as keycloakdb <<database>>
 
@@ -120,6 +122,7 @@ opportunities ..> configserver : fetch config
 activities    ..> configserver : fetch config
 logconsumer   ..> configserver : fetch config
 projects      ..> configserver : fetch config
+diagrams      ..> configserver : fetch config
 
 ' ── Gateway routing ───────────────────────────────────────────
 gateway --> keycloak     : /auth/** (pass-through)
@@ -129,6 +132,7 @@ gateway --> contacts     : /api/accounts/*/contacts/**
 gateway --> opportunities : /api/opportunities/**
 gateway --> activities   : /api/opportunities/*/activities/**
 gateway --> projects     : /api/projects/**
+gateway --> diagrams     : /api/diagrams/**
 
 ' ── JWT validation — all secured services fetch JWK from Keycloak ──
 note right of keycloak
@@ -146,6 +150,7 @@ contacts      --> maindb     : contactsdb
 opportunities --> maindb     : opportunitiesdb
 activities    --> maindb     : activitiesdb
 projects      --> maindb     : projectsdb
+diagrams      --> maindb     : diagramsdb
 keycloak      --> keycloakdb : keycloak db
 logconsumer   --> logsdb     : logsdb
 

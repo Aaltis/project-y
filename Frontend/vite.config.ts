@@ -14,6 +14,7 @@ export default defineConfig({
     proxy: {
       '/api': apiTarget,
       '/auth': apiTarget,
+      '/actuator': apiTarget,
     },
   },
 })

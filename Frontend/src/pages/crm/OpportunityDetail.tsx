@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { apiGet, apiPost, apiPatch, apiPut, ApiError } from '../../api'
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, ApiError } from '../../api'
 import ErrorBanner from '../../components/ErrorBanner'
 import DataTable from '../../components/DataTable'
 
@@ -77,6 +77,14 @@ export default function OpportunityDetail() {
       await apiPatch(`/api/opportunities/${id}/stage`, { stage: nextStage })
       loadAll()
     } catch (e) { setError(e instanceof ApiError ? e.message : 'Stage transition failed') }
+  }
+
+  async function deleteActivity(activityId: string) {
+    if (!confirm('Delete this activity?')) return
+    try {
+      await apiDelete(`/api/opportunities/${id}/activities/${activityId}`)
+      loadAll()
+    } catch (e) { setError(e instanceof ApiError ? e.message : 'Failed to delete') }
   }
 
   async function createActivity(e: React.FormEvent) {
@@ -175,6 +183,17 @@ export default function OpportunityDetail() {
               { key: 'text', label: 'Text' },
               { key: 'dueAt', label: 'Due', render: (v) => v ? new Date(v as string).toLocaleString() : '—' },
               { key: 'createdAt', label: 'Created', render: (v) => new Date(v as string).toLocaleString() },
+              {
+                key: 'id', label: '',
+                render: (_, row) => (
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={(e) => { e.stopPropagation(); deleteActivity(row.id as string) }}
+                  >
+                    Delete
+                  </button>
+                ),
+              },
             ]}
             rows={activities as unknown as Record<string, unknown>[]}
             emptyText="No activities yet"

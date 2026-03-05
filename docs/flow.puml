@@ -1,0 +1,89 @@
+@startuml flow
+
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam sequenceArrowThickness 1.5
+skinparam sequenceBoxBackgroundColor #F5F5F5
+skinparam ParticipantBackgroundColor #FFFFFF
+skinparam ParticipantBorderColor #AAAAAA
+skinparam NoteBackgroundColor #FFFDE7
+skinparam NoteBorderColor #F57F17
+
+title Project Y — Authenticated API Request Flow
+
+actor "User\n(Browser)" as user
+participant "**Frontend**\nReact + keycloak-js\n:5173" as fe #E3F2FD
+participant "**Gateway**\nSpring Cloud Gateway\n:8080" as gw #FFF8E1
+participant "**Keycloak**\n(Identity Provider)\n:8080/auth" as kc #E8EAF6
+participant "**Service**\n(Accounts / Projects\n/ Diagrams / …)" as svc #E8F5E9
+database "**PostgreSQL**" as db #EDE7F6
+queue "**RabbitMQ**\nrequest-logs" as mq #FCE4EC
+participant "**Log Consumer**" as lc #F3F3F3
+
+== Login ==
+
+user -> fe : Click "Login"
+fe -> kc : Redirect to Keycloak\n(PKCE / authorization_code flow)
+kc -> user : Show login page
+user -> kc : Username + password
+kc -> fe : Authorization code
+fe -> kc : Exchange code for tokens\n(POST /token)
+kc -> fe : Access token (JWT)\n+ refresh token
+note right of fe
+  Token stored in memory only
+  (never localStorage).
+  Refreshed before expiry via
+  keycloak.updateToken().
+end note
+
+== Authenticated API Call ==
+
+user -> fe : Interact (e.g. create account)
+fe -> gw : **HTTP POST /api/accounts**\nAuthorization: Bearer <JWT>
+
+group Gateway global filter
+  gw -> gw : Extract JWT claim\n"preferred_username"
+  gw -> gw : Bucket4j rate-limit check\n(20 req/s per user)\n[429 if exceeded]
+  gw -> svc : Forward request\n(same JWT, no modification)
+end
+
+group Service — JWT validation
+  svc -> kc : Fetch public keys (JWK set)\n(cached; re-fetched on key rotation)
+  kc -> svc : Public key set
+  svc -> svc : Validate JWT signature,\nextract realm_access.roles →\nROLE_crm_admin / ROLE_crm_sales
+  svc -> svc : @PreAuthorize check\n(@perm.canAccess / @projectPerm.hasRole)
+  note right of svc
+    crm_admin → full access
+    crm_sales → own records only
+    (ownerId = JWT sub, set server-side)
+  end note
+end
+
+group Service — business logic + DB
+  svc -> db : Read / write via JPA + Flyway schema
+  db -> svc : Result
+  svc -> gw : HTTP response (200 / 201 / 400 / 403 …)
+end
+
+gw -> fe : Forward response
+
+group Async audit (fire-and-forget)
+  gw ->> mq : Publish RequestLogMessage\n{method, path, status, duration, username}
+  mq -> lc : Deliver message
+  lc -> db : INSERT request_log
+end
+
+fe -> user : Update UI
+
+== Token Refresh ==
+
+fe -> kc : POST /token\ngrant_type=refresh_token
+kc -> fe : New access token
+note right of fe
+  Triggered automatically when
+  token is within 30 s of expiry.
+  On 401 from any API call →
+  keycloak.login() redirect.
+end note
+
+@enduml

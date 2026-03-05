@@ -133,3 +133,5 @@ Make it run with `npm install` + `npm run dev`.
 ---
 
 If you want the diagrams to be **manipulable** later without many libs, the next step would be: keep the image page now, and add a second “Interactive graph” page later using **one** library (Mermaid *or* React Flow). For MVP, the static PNG approach is the lowest friction and matches your existing PlantUML pipeline.
+
+

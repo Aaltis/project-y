@@ -112,6 +112,22 @@ if (-not $SkipBuild) {
 }
 
 # ---------------------------------------------------------------------------
+# TypeScript type-check (Frontend)
+# ---------------------------------------------------------------------------
+$FrontendDir = Join-Path $ProjectRoot "Frontend"
+if (Test-Path (Join-Path $FrontendDir "package.json")) {
+    Write-Step "Type-checking Frontend TypeScript (tsc --noEmit)..."
+    Push-Location $FrontendDir
+    try {
+        & npx tsc --noEmit
+        if ($LASTEXITCODE -ne 0) { throw "TypeScript type-check failed (exit $LASTEXITCODE)" }
+        Write-Host "TypeScript OK." -ForegroundColor Green
+    } finally {
+        Pop-Location
+    }
+}
+
+# ---------------------------------------------------------------------------
 # 2. docker compose up --build
 # ---------------------------------------------------------------------------
 Write-Step "Starting Docker Compose stack (building images)..."
@@ -126,8 +142,16 @@ try {
         $upArgs += $Services
     }
     if (-not $Foreground) { $upArgs += "-d" }
+
+    # Stop the transcript while running docker compose: PS5 Start-Transcript can interfere
+    # with native command stdout in non-interactive terminals, causing a spurious exit 1 even
+    # when compose succeeds. Docker output is not captured by the transcript anyway.
+    Stop-Transcript -ErrorAction SilentlyContinue
     & docker @upArgs
-    if ($LASTEXITCODE -ne 0) { throw "docker compose up failed (exit $LASTEXITCODE)" }
+    $dockerExit = $LASTEXITCODE
+    Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue
+
+    if ($dockerExit -ne 0) { throw "docker compose up failed (exit $dockerExit)" }
 } finally { Pop-Location }
 
 Write-Host ""

@@ -119,6 +119,16 @@ configServer:
   tag: latest
   pullPolicy: Never
 
+projects:
+  image: projects
+  tag: latest
+  pullPolicy: Never
+
+diagrams:
+  image: diagrams
+  tag: latest
+  pullPolicy: Never
+
 logsdb:
   image: postgres:13
   database: logsdb

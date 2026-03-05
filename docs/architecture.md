@@ -2,20 +2,23 @@
 
 ## Diagrams
 
-**Architecture diagram** — [architecture.puml](architecture.puml)
+| Diagram | File | Description |
+|---------|------|-------------|
+| Service topology | [architecture.puml](architecture.puml) | All services, routing, databases, messaging |
+| Authenticated request flow | [flow.puml](flow.puml) | Sequence diagram: browser → gateway → service → DB |
+| Stage & lifecycle states | [stages.puml](stages.puml) | Opportunity workflow + PMBOK project lifecycle |
+| Database schema | [database.puml](database.puml) | All tables across all services |
 
-Render with PlantUML:
+Render with PlantUML (Docker):
+```powershell
+docker run --rm -v "${PWD}/docs:/data" plantuml/plantuml /data/architecture.puml
+docker run --rm -v "${PWD}/docs:/data" plantuml/plantuml /data/flow.puml
+docker run --rm -v "${PWD}/docs:/data" plantuml/plantuml /data/stages.puml
+```
 
-| Tool | Command |
-|------|---------|
-| Docker (PowerShell) | `docker run --rm -v "${PWD}/docs:/data" plantuml/plantuml /data/architecture.puml` |
-| Docker (Bash) | `docker run --rm -v "$(pwd)/docs:/data" plantuml/plantuml /data/architecture.puml` |
-| VS Code | Install [PlantUML extension](https://marketplace.visualstudio.com/items?itemName=jebbs.plantuml), open file, press `Alt+D` |
-| Online | Paste into [plantuml.com/plantuml](https://www.plantuml.com/plantuml/uml/) |
+VS Code: install [PlantUML extension](https://marketplace.visualstudio.com/items?itemName=jebbs.plantuml), open `.puml` file, press `Alt+D`.
 
 ![Architecture](architecture.png)
-
-**Database schema** — [database.puml](database.puml) — all services, all tables, with design notes.
 
 ![Database schema](database.png)
 
@@ -25,12 +28,13 @@ Render with PlantUML:
 
 | Service | Port | Role |
 |---------|------|------|
-| **Gateway** | 8080 (host) | Single public entry point. Routes all traffic, enforces per-user rate limiting (5 req/s via Bucket4j), publishes every `/api/*` request to RabbitMQ. |
+| **Gateway** | 8080 (host) | Single public entry point. Routes all traffic, enforces per-user rate limiting (20 req/s via Bucket4j, keyed by JWT `preferred_username`), publishes every `/api/*` request to RabbitMQ. |
 | **Accounts** | 8081 | CRM accounts. |
 | **Contacts** | 8082 | Contacts linked to accounts. |
 | **Opportunities** | 8083 | Opportunities with stage-transition workflow. |
 | **Activities** | 8084 | Activities linked to opportunities. |
 | **Projects** | 8085 | PMBOK project management — charter, WBS, tasks, baselines, deliverables, change requests, status reports, closing. |
+| **Diagrams** | 8086 | Interactive canvas diagrams — nodes referencing live CRM/Projects entities, edges, sticky notes. Stored per user in `diagramsdb`. |
 | **Config Server** | 8888 | Spring Cloud Config Server. Serves centralised properties to all services at startup (classpath/native backend). |
 | **Customer** | 8080 (internal) | Legacy customer records service. |
 | **Log Consumer** | — | Consumes `request-logs` queue, writes each request to `logsdb`. |
@@ -54,10 +58,11 @@ localhost:8080  (Gateway — single public entry point)
       ├── /api/opportunities/*/activities/**  ──►  Activities :8084
       ├── /api/opportunities/**               ──►  Opportunities :8083
       ├── /api/projects/**                    ──►  Projects :8085
+      ├── /api/diagrams/**                    ──►  Diagrams :8086
       └── /api/customers/**                   ──►  Customer :8080 (internal)
                              │
                         GlobalFilter (all /api/* requests)
-                        rate-limit 5 req/s · publish to RabbitMQ
+                        rate-limit 20 req/s per user · publish to RabbitMQ
                              │
                         Log Consumer ──► logsdb
 ```
