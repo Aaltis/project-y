@@ -143,6 +143,56 @@ project member) unless otherwise noted. `crm_admin` bypasses all project-role ch
 
 ---
 
+## Diagrams
+
+Diagrams are private per user — each caller only sees their own. `crm_admin` sees all.
+
+### Diagram CRUD
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/diagrams` | Create diagram — body: `{ "name": "My diagram" }` → `201` with `id` |
+| `GET` | `/api/diagrams` | List caller's diagrams |
+| `GET` | `/api/diagrams/{id}` | Get diagram with all nodes and edges |
+| `PUT` | `/api/diagrams/{id}` | Rename — body: `{ "name": "New name" }` |
+| `DELETE` | `/api/diagrams/{id}` | Delete diagram and all its nodes/edges → `204` |
+
+### Canvas save (atomic)
+
+```
+PUT /api/diagrams/{id}/canvas
+```
+
+Replaces all nodes and edges atomically. Send the full canvas state on every save.
+
+Request body:
+```json
+{
+  "nodes": [
+    {
+      "nodeKey": "n1",
+      "entityType": "ACCOUNT",
+      "entityId": "uuid-or-null",
+      "label": "Acme Corp",
+      "x": 100, "y": 200,
+      "color": "#3b82f6",
+      "shape": "RECTANGLE"
+    }
+  ],
+  "edges": [
+    { "sourceKey": "n1", "targetKey": "n2", "label": "owns", "style": "SOLID" }
+  ]
+}
+```
+
+`entityType` values: `ACCOUNT`, `CONTACT`, `OPPORTUNITY`, `PROJECT`, `TASK`, `RISK`, `NOTE`
+`shape` values: `RECTANGLE`, `CIRCLE`, `DIAMOND`, `NOTE`
+`style` values: `SOLID`, `DASHED`, `DOTTED`
+
+`entityId` is `null` for free-form nodes and sticky notes.
+
+---
+
 ## Customers (legacy)
 
 | Method | Path | Description |

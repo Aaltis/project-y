@@ -14,7 +14,7 @@ import ReactFlow, {
   type NodeTypes,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { apiGet, apiPost, apiPut, apiDelete, ApiError } from '../../api'
+import { apiGet, apiPut, ApiError } from '../../api'
 import ErrorBanner from '../../components/ErrorBanner'
 
 // ---------------------------------------------------------------------------
@@ -33,6 +33,7 @@ interface NodeData {
   label?: string
   color?: string
   shape?: string
+  onMarkDirty?: () => void
 }
 
 interface EdgeData {
@@ -60,10 +61,20 @@ const ENTITY_COLORS: Record<string, string> = {
 }
 
 // ---------------------------------------------------------------------------
-// Custom node: EntityNode
+// Custom node: EntityNode (double-click label to rename)
 // ---------------------------------------------------------------------------
 function EntityNode({ data }: { data: NodeData }) {
   const color = data.color ?? ENTITY_COLORS[data.entityType ?? ''] ?? '#6b7280'
+  const [editingLabel, setEditingLabel] = useState(false)
+  const [labelValue, setLabelValue] = useState(data.label ?? data.nodeKey ?? '')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function commitLabel() {
+    data.label = labelValue
+    data.onMarkDirty?.()
+    setEditingLabel(false)
+  }
+
   return (
     <div style={{
       border: `2px solid ${color}`,
@@ -73,7 +84,7 @@ function EntityNode({ data }: { data: NodeData }) {
       maxWidth: 200,
       boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
     }}>
-      {data.entityType && (
+      {data.entityType && data.entityType !== 'NOTE' && (
         <div style={{
           background: color,
           color: '#fff',
@@ -87,9 +98,25 @@ function EntityNode({ data }: { data: NodeData }) {
           {data.entityType}
         </div>
       )}
-      <div style={{ padding: '6px 10px', fontSize: 13, fontWeight: 500 }}>
-        {data.label ?? data.nodeKey}
-      </div>
+      {editingLabel ? (
+        <input
+          ref={inputRef}
+          value={labelValue}
+          autoFocus
+          onChange={(e) => setLabelValue(e.target.value)}
+          onBlur={commitLabel}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitLabel(); if (e.key === 'Escape') setEditingLabel(false) }}
+          style={{ padding: '4px 8px', fontSize: 13, fontWeight: 500, border: 'none', outline: 'none', width: '100%', boxSizing: 'border-box' }}
+        />
+      ) : (
+        <div
+          onDoubleClick={() => { setLabelValue(data.label ?? data.nodeKey ?? ''); setEditingLabel(true) }}
+          title="Double-click to rename"
+          style={{ padding: '6px 10px', fontSize: 13, fontWeight: 500, cursor: 'text' }}
+        >
+          {data.label ?? data.nodeKey}
+        </div>
+      )}
     </div>
   )
 }
@@ -97,7 +124,7 @@ function EntityNode({ data }: { data: NodeData }) {
 // ---------------------------------------------------------------------------
 // Custom node: NoteNode (editable sticky)
 // ---------------------------------------------------------------------------
-function NoteNode({ data, id }: { data: NodeData; id: string }) {
+function NoteNode({ data }: { data: NodeData }) {
   const [text, setText] = useState(data.label ?? '')
   return (
     <div
@@ -169,6 +196,8 @@ export default function DiagramCanvas() {
 
   // Debounce timer for auto-save
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Stable ref so node callbacks always point to current markDirty
+  const markDirtyRef = useRef<() => void>(() => {})
 
   // -------------------------------------------------------------------------
   // Load diagram on mount
@@ -187,6 +216,7 @@ export default function DiagramCanvas() {
           entityId: n.entityId,
           label: n.label,
           color: n.color ?? ENTITY_COLORS[n.entityType ?? ''],
+          onMarkDirty: () => markDirtyRef.current(),
         },
       })))
       setEdges(d.edges.map((e) => ({
@@ -223,6 +253,7 @@ export default function DiagramCanvas() {
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
     autoSaveTimer.current = setTimeout(() => doSave(), 2000)
   }
+  markDirtyRef.current = markDirty
 
   // -------------------------------------------------------------------------
   // Save canvas
@@ -270,6 +301,7 @@ export default function DiagramCanvas() {
         entityId,
         label,
         color: ENTITY_COLORS[entityType] ?? '#6b7280',
+        onMarkDirty: () => markDirtyRef.current(),
       },
     }
     setNodes((nds) => [...nds, newNode])

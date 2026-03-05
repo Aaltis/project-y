@@ -27,3 +27,11 @@ data:
     SELECT 'CREATE DATABASE activitiesdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'activitiesdb')\gexec
     GRANT ALL PRIVILEGES ON DATABASE activitiesdb TO postgres;
     ALTER DATABASE activitiesdb OWNER TO postgres;
+
+    SELECT 'CREATE DATABASE projectsdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'projectsdb')\gexec
+    GRANT ALL PRIVILEGES ON DATABASE projectsdb TO postgres;
+    ALTER DATABASE projectsdb OWNER TO postgres;
+
+    SELECT 'CREATE DATABASE diagramsdb' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'diagramsdb')\gexec
+    GRANT ALL PRIVILEGES ON DATABASE diagramsdb TO postgres;
+    ALTER DATABASE diagramsdb OWNER TO postgres;

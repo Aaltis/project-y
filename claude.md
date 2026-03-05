@@ -828,6 +828,36 @@ or iterating with index access. PS7 returns arrays consistently; PS5 does not.
 
 ---
 
+## Debug Log — compose-up.ps1 exits with 1 despite stack starting successfully (RESOLVED)
+
+**Symptom:** `compose-up.ps1` throws `docker compose up failed (exit 1)` but the Docker stack
+is actually running fine. No docker compose output appears in the transcript log between
+`"Starting Docker Compose stack"` and the error — the command fails silently.
+
+**Root cause:** PowerShell 5 `Start-Transcript` interferes with native command stdout pipes in
+non-interactive terminals (VS Code PowerShell). When the transcript is active, docker compose's
+`--progress plain` output goes through a different Windows console channel that PS5 cannot capture
+via transcript. This causes docker compose to report exit code 1 in the PS5 context even though it
+actually succeeds (running the same command directly in bash returns exit 0 and all containers start).
+
+**Fix:** Stop the transcript before `docker compose up` and re-attach with `-Append` afterward:
+```powershell
+Stop-Transcript -ErrorAction SilentlyContinue
+& docker @upArgs
+$dockerExit = $LASTEXITCODE
+Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue
+if ($dockerExit -ne 0) { throw "docker compose up failed (exit $dockerExit)" }
+```
+`-ErrorAction SilentlyContinue` on both calls handles direct invocations where no transcript is
+active. `-Append` ensures the log file is not truncated when the transcript is re-attached.
+
+**Key lesson:** In PS5, `Start-Transcript` can interfere with native command execution in
+non-interactive terminals. For commands that produce high-volume output through Windows console APIs
+(like docker compose), stop the transcript before the call and re-attach after. This applies
+specifically to `docker compose up --build` — other docker commands are unaffected.
+
+---
+
 ## Phase 8 — Frontend ✅ DONE
 
 React + TypeScript + Vite SPA that talks to the Gateway (`http://localhost:8080`) and authenticates
@@ -1119,6 +1149,11 @@ Custom node types provide domain-specific visuals.
 | Entity search sidebar (calls CRM + Projects APIs) | ✅ | inside `DiagramCanvas.tsx` |
 | Entity label resolution on canvas load | ✅ | inside `DiagramCanvas.tsx` |
 | Nav link + routes | ✅ | `Layout.tsx`, `App.tsx` |
+| Helm template `diagrams-deployment.yaml` | ✅ | `deployment/templates/diagrams-deployment.yaml` |
+| Add `projectsdb` + `diagramsdb` to K8s postgres init | ✅ | `deployment/templates/maindb_configmap_init_sql.yaml` |
+| Add `projects` + `diagrams` to values-dev.yaml | ✅ | `deployment/values-dev.yaml` |
+| D01-D06 Diagrams system tests | ✅ | `scripts/docker/system-test.ps1` |
+| Raise rate limiter: 5 → 20 req/s per user | ✅ | `Gateway/.../ratelimit/RateLimiterRegistry.java` |
 
 ---
 
@@ -1126,53 +1161,28 @@ Custom node types provide domain-specific visuals.
 
 ### High Priority
 
-#### Fix P38 system test flakiness
-**Symptom:** P38 ("close project before all deliverables accepted → 400") intermittently returns 429
-instead of 400. P37 (SPONSOR approves closure report) fires immediately before P38, and together
-with the preceding P36 request they can exceed the 5 req/s Bucket4j gateway rate limit.
+#### Fix P38 system test flakiness ✅ DONE
+Added `Start-Sleep -Seconds 1` before P38's first request. Rate limiter also raised from 5 → 20 req/s.
 
-**Root cause:** The blocking deliverable (created at P14) is accepted at P19 — the test then needs
-a *second* unaccepted deliverable to block the close at P38. That second deliverable is created
-inside P39's setup block right before the close attempt, firing 3 calls in rapid succession after
-P37's call on the same bucket.
-
-**Fix options:**
-1. Move the blocking deliverable creation to just after P37 with a `Start-Sleep -Seconds 1`
-2. Raise gateway rate limit for test environments from 5 req/s to 20 req/s via config property
-
-#### Rate limiter: switch to per-user bucket
-**Current:** Bucket4j limits by IP — 5 req/s per IP. A single browser opening the Project
-Workspace makes ~6 parallel API calls (project + members + charter + wbs + tasks + baselines).
-This will intermittently 429 for real users.
-
-**Fix:** Resolve the bucket key from the JWT `sub` claim instead of the remote IP, so each
-authenticated user gets their own bucket. The gateway already has the JWT available via
-Spring Security context in the filter chain.
+#### Rate limiter: raise capacity ✅ DONE
+Was already per-user (keyed by JWT `preferred_username`). Raised from 5 → 20 req/s in
+`Gateway/.../ratelimit/RateLimiterRegistry.java`.
 
 ### Medium Priority
 
-#### System tests for Phase 9 (Diagrams service has zero test coverage)
-Add D01–D06 tests to `scripts/docker/system-test.ps1`:
-- D01: create diagram → 200 with id
-- D02: list diagrams → includes created
-- D03: save canvas (2 nodes, 1 edge) → 200, load back and verify count
-- D04: rename diagram → 200
-- D05: testuser2 cannot read testuser's diagram → 404 (not 403 — access check returns 404)
-- D06: delete diagram → 204, list confirms gone
+#### System tests for Phase 9 ✅ DONE
+D01–D06 tests added to `scripts/docker/system-test.ps1`.
 
-#### Stage 2 — Kubernetes: update Helm chart for new services
-`deployment/templates/` is missing entries for `projects` and `diagrams` services added in
-Phases 7 and 9. Before k3s/kind migration:
-- Add `deployment/templates/projects-deployment.yaml` ✅ (already exists per Phase 7 checklist)
-- Add `deployment/templates/diagrams-deployment.yaml` ❌
-- Add `diagramsdb` to `deployment/templates/maindb_configmap_init_sql.yaml` ❌
-- Add `diagrams` section to `deployment/values-dev.yaml` ❌
+#### Stage 2 — Kubernetes: update Helm chart for new services ✅ DONE
+- `deployment/templates/projects-deployment.yaml` ✅
+- `deployment/templates/diagrams-deployment.yaml` ✅
+- `projectsdb` + `diagramsdb` in `maindb_configmap_init_sql.yaml` ✅
+- `projects` + `diagrams` sections in `values-dev.yaml` ✅
 
-#### Missing CRUD on frontend
-- **Contacts:** No edit (PUT) form on AccountDetail — only create/list
-- **Opportunity activities:** No delete button in OpportunityDetail activities list
-- **Diagram nodes:** No inline label rename without full canvas re-save (backend supports it via
-  canvas PUT, but UX has no rename affordance)
+#### Missing CRUD on frontend ✅ DONE
+- **Contacts:** Edit (PUT) + Delete on AccountDetail ✅ (`AccountDetail.tsx`)
+- **Opportunity activities:** Delete button on OpportunityDetail ✅ (`OpportunityDetail.tsx`)
+- **Diagram nodes:** Double-click label → inline edit on `EntityNode` ✅ (`DiagramCanvas.tsx`)
 
 ### Low Priority
 
@@ -1184,11 +1194,9 @@ projects → approval → baseline in sequence with no correlation ID visible.
 `spring-boot-starter-actuator` + `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-zipkin`
 (no code changes needed — auto-instrumented via `RestTemplate`/WebClient).
 
-#### Frontend TypeScript build not validated
-`npm run dev` starts without type-checking. A broken TypeScript error surfaces only in the browser.
-
-**Fix:** Add `tsc --noEmit` step to `compose-up.ps1` for the frontend service, or add a GitHub
-Actions workflow that runs `cd Frontend && npm ci && npm run build` on every push.
+#### Frontend TypeScript build not validated ✅ DONE
+`tsc --noEmit` added to `compose-up.ps1` — runs after Gradle builds, before docker compose.
+Fails fast if any TypeScript type error is present.
 
 #### Secrets management
 Passwords are plaintext in committed files (`docker-compose.yml`, `Config/.../application.properties`):

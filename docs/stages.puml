@@ -1,0 +1,126 @@
+@startuml stages_opportunity
+
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam state {
+    BackgroundColor #FFFFFF
+    BorderColor     #555555
+    ArrowColor      #333333
+    FontSize        12
+}
+
+title Opportunity Stage Workflow\n(PATCH /api/opportunities/{id}/stage)
+
+[*] --> PROSPECT : POST /api/opportunities
+
+PROSPECT --> QUALIFY    : advance
+PROSPECT --> LOST
+
+QUALIFY --> PROPOSE     : advance
+QUALIFY --> LOST
+
+PROPOSE --> NEGOTIATE   : advance
+PROPOSE --> LOST
+
+NEGOTIATE --> WON       : advance\n[amount + closeDate required]
+NEGOTIATE --> LOST
+
+WON  --> [*]
+LOST --> [*]
+
+note right of WON
+  **WON gate** — HTTP 400 if either is missing:
+    • amount
+    • closeDate
+end note
+
+note right of QUALIFY
+  Every stage transition auto-creates a
+  NOTE activity ("Stage changed X → Y by
+  <user>") and publishes a StageChangedEvent
+  to the opportunity-events RabbitMQ queue.
+end note
+
+note bottom of LOST
+  Any stage can go directly to LOST.
+  Backward transitions rejected (HTTP 400).
+end note
+
+@enduml
+
+
+@startuml stages_project
+
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam state {
+    BackgroundColor #FFFFFF
+    BorderColor     #555555
+    ArrowColor      #333333
+    FontSize        12
+}
+
+title PMBOK Project Lifecycle\n(POST /api/projects/{id}/…)
+
+' ── Project status ────────────────────────────────────────────
+state "Project: **DRAFT**" as PDRAFT
+state "Project: **ACTIVE**" as PACTIVE
+state "Project: **CLOSED**" as PCLOSED
+
+' ── Charter sub-states ────────────────────────────────────────
+state "Charter lifecycle" as charter_group {
+    state "Charter: DRAFT"      as CDRAFT
+    state "Charter: SUBMITTED"  as CSUBMIT
+    state "Charter: APPROVED"   as CAPPROVE
+    CDRAFT   --> CSUBMIT  : PM submits\n(/charter/submit)
+    CSUBMIT  --> CAPPROVE : SPONSOR approves\n(/charter/approve)
+}
+
+' ── Baseline sub-states ───────────────────────────────────────
+state "Baseline lifecycle" as baseline_group {
+    state "Baseline: DRAFT"     as BDRAFT
+    state "Baseline: SUBMITTED" as BSUBMIT
+    state "Baseline: APPROVED"  as BAPPROVE
+    BDRAFT   --> BSUBMIT  : PM submits\n(/baselines/{v}/submit)
+    BSUBMIT  --> BAPPROVE : SPONSOR approves\n(/baselines/{v}/approve)\n[immutable after this]
+}
+
+' ── Change Request sub-states ─────────────────────────────────
+state "Change Request lifecycle" as cr_group {
+    state "CR: DRAFT"       as CRDRAFT
+    state "CR: SUBMITTED"   as CRSUBMIT
+    state "CR: IN_REVIEW"   as CRREVIEW
+    state "CR: APPROVED"    as CRAPPROVE
+    state "CR: REJECTED"    as CRREJECT
+    state "CR: IMPLEMENTED" as CRIMPLEMENT
+    CRDRAFT     --> CRSUBMIT   : member submits
+    CRSUBMIT    --> CRREVIEW   : PM reviews
+    CRREVIEW    --> CRAPPROVE  : SPONSOR or PM approves\n(SCOPE/SCHEDULE/COST → auto-creates\nnew Baseline DRAFT)
+    CRREVIEW    --> CRREJECT   : SPONSOR or PM rejects
+    CRAPPROVE   --> CRIMPLEMENT : PM implements\n[linked Baseline must be APPROVED]
+}
+
+' ── Closure sub-states ────────────────────────────────────────
+state "Closure lifecycle" as closure_group {
+    state "Closure: DRAFT"     as CLOSEDRAFT
+    state "Closure: SUBMITTED" as CLOSESUBMIT
+    state "Closure: APPROVED"  as CLOSEAPPROVE
+    CLOSEDRAFT   --> CLOSESUBMIT  : PM submits
+    CLOSESUBMIT  --> CLOSEAPPROVE : SPONSOR approves
+}
+
+' ── Top-level project flow ────────────────────────────────────
+[*]       --> PDRAFT
+PDRAFT    --> PACTIVE  : Charter APPROVED
+PACTIVE   --> PCLOSED  : POST /close\n[gate: closure APPROVED\n+ all deliverables ACCEPTED]
+PCLOSED   --> [*]
+
+note right of PACTIVE
+  While ACTIVE:
+  • Planning (WBS, tasks, costs, baselines)
+  • Execution (deliverables, work logs, issues)
+  • Monitoring (CRs, status reports, decisions)
+  all run in parallel as needed.
+end note
+
+@enduml

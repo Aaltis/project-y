@@ -1,16 +1,18 @@
-# system-test.ps1 - End-to-end CRM + PMBOK API tests for Docker Compose stack
+# system-test.ps1 - End-to-end CRM + PMBOK + Diagrams API tests for Docker Compose stack
 #
 # Usage:
-#   .\scripts\docker\system-test.ps1             # run all tests
-#   .\scripts\docker\system-test.ps1 -RateLimit  # also test HTTP 429 rate limiting
-#   .\scripts\docker\system-test.ps1 -SkipCRM    # run only PMBOK tests
-#   .\scripts\docker\system-test.ps1 -SkipPMBOK  # run only CRM tests
+#   .\scripts\docker\system-test.ps1               # run all tests
+#   .\scripts\docker\system-test.ps1 -RateLimit    # also test HTTP 429 rate limiting
+#   .\scripts\docker\system-test.ps1 -SkipCRM      # run only PMBOK + Diagrams tests
+#   .\scripts\docker\system-test.ps1 -SkipPMBOK    # run only CRM + Diagrams tests
+#   .\scripts\docker\system-test.ps1 -SkipDiagrams # skip Diagrams tests
 #
 # Tests:
 #   T01-T22   CRM core (auth, accounts, contacts, opportunities, activities, log consumer)
 #   P01-P40   PMBOK Projects module (all phases: identity, initiation, planning,
 #             execution, monitoring & controlling, closing)
 #   P01a,P01b  GET /api/projects list (caller sees own projects; SPONSOR sees shared)
+#   D01-D06   Diagrams service (create, canvas save/load, rename, access control, delete)
 #
 # Prerequisites:
 #   Stack running: .\scripts\docker\compose-up.ps1
@@ -19,7 +21,8 @@
 param(
     [switch]$RateLimit,
     [switch]$SkipCRM,
-    [switch]$SkipPMBOK
+    [switch]$SkipPMBOK,
+    [switch]$SkipDiagrams
 )
 
 $ErrorActionPreference = "Stop"
@@ -973,6 +976,8 @@ if ($ProjectId -and $ClosureReportId) {
 } else { Skip "No project or closure report" }
 
 Section "P38: $User1Name (PM) closes project before all deliverables accepted -> 400"
+# P33-P36 consumed 4 of testuser's 5 req/s tokens; sleep so the bucket refills.
+Start-Sleep -Seconds 1
 # Deliverable was ACCEPTED in P19, so this should actually succeed if checked.
 # Create a new unaccepted deliverable to trigger the gate rejection.
 $BlockingDeliverableId = $null
@@ -1022,6 +1027,107 @@ if ($ProjectId -and $LessonId) {
 } else { Skip "No project or lesson" }
 
 } # end -not $SkipPMBOK
+
+# ============================================================================
+# DIAGRAMS (D01-D06)
+# ============================================================================
+if (-not $SkipDiagrams) {
+
+$DiagramId = $null
+
+Section "D01: Create diagram -> 201 with id"
+$body = @{ name = "Test Diagram" } | ConvertTo-Json -Compress
+$r = Invoke-Post -Uri "$BaseUrl/api/diagrams" -Body $body -ContentType "application/json" -Headers $Auth1
+if ($r -and $r.StatusCode -eq 201) {
+    $DiagramId = ($r.Content | ConvertFrom-Json).id
+    if ($DiagramId) { Pass "Diagram created: $DiagramId" }
+    else { Fail "No id in response" }
+} else {
+    Fail "POST /api/diagrams -> $(StatusOf $r): $($r.Content)"
+}
+
+Section "D02: List diagrams -> includes created diagram"
+if ($DiagramId) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/diagrams" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $list = @($r.Content | ConvertFrom-Json)
+        $found = $list | Where-Object { $_.id -eq $DiagramId }
+        if ($found) { Pass "Diagram list: $($list.Count) item(s), created diagram found" }
+        else { Fail "Diagram $DiagramId not found in list" }
+    } else {
+        Fail "GET /api/diagrams -> $(StatusOf $r)"
+    }
+} else { Skip "No diagram id" }
+
+Section "D03: Save canvas (2 nodes, 1 edge) -> 200; load back and verify"
+if ($DiagramId) {
+    $canvas = @{
+        nodes = @(
+            @{ nodeKey = "n1"; entityType = "ACCOUNT"; entityId = $null; label = "Acme Corp"; x = 100; y = 150; color = "#3b82f6"; shape = "RECTANGLE" },
+            @{ nodeKey = "n2"; entityType = "NOTE";    entityId = $null; label = "Important!"; x = 300; y = 150; color = $null;      shape = "NOTE"      }
+        )
+        edges = @(
+            @{ sourceKey = "n1"; targetKey = "n2"; label = "see"; style = "SOLID" }
+        )
+    } | ConvertTo-Json -Depth 5 -Compress
+    $r = Invoke-Put -Uri "$BaseUrl/api/diagrams/$DiagramId/canvas" -Body $canvas -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        # Load and verify
+        $r2 = Invoke-Get -Uri "$BaseUrl/api/diagrams/$DiagramId" -Headers $Auth1
+        if ($r2 -and $r2.StatusCode -eq 200) {
+            $detail = $r2.Content | ConvertFrom-Json
+            $nodeCount = @($detail.nodes).Count
+            $edgeCount = @($detail.edges).Count
+            if ($nodeCount -eq 2 -and $edgeCount -eq 1) { Pass "Canvas saved and loaded: $nodeCount nodes, $edgeCount edge" }
+            else { Fail "Expected 2 nodes + 1 edge, got $nodeCount nodes + $edgeCount edges" }
+        } else {
+            Fail "GET /api/diagrams/$DiagramId -> $(StatusOf $r2)"
+        }
+    } else {
+        Fail "PUT /api/diagrams/$DiagramId/canvas -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No diagram id" }
+
+Section "D04: Rename diagram -> 200"
+if ($DiagramId) {
+    $body = @{ name = "Renamed Diagram" } | ConvertTo-Json -Compress
+    $r = Invoke-Put -Uri "$BaseUrl/api/diagrams/$DiagramId" -Body $body -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 200) {
+        $updated = $r.Content | ConvertFrom-Json
+        if ($updated.name -eq "Renamed Diagram") { Pass "Diagram renamed to 'Renamed Diagram'" }
+        else { Fail "Name not updated: $($updated.name)" }
+    } else {
+        Fail "PUT /api/diagrams/$DiagramId -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No diagram id" }
+
+Section "D05: testuser2 cannot read testuser's diagram -> 404"
+if ($DiagramId -and $Auth2) {
+    $r = Invoke-Get -Uri "$BaseUrl/api/diagrams/$DiagramId" -Headers $Auth2
+    if ($r -and $r.StatusCode -eq 404) { Pass "testuser2 gets 404 for testuser's diagram (access control ok)" }
+    elseif ($r -and $r.StatusCode -eq 403) { Pass "testuser2 gets 403 for testuser's diagram (access control ok)" }
+    else { Fail "Expected 404/403, got $(StatusOf $r)" }
+} else { Skip "No diagram id or Auth2" }
+
+Section "D06: Delete diagram -> 204; list confirms gone"
+if ($DiagramId) {
+    $r = Invoke-Delete -Uri "$BaseUrl/api/diagrams/$DiagramId" -Headers $Auth1
+    if ($r -and $r.StatusCode -eq 204) {
+        $r2 = Invoke-Get -Uri "$BaseUrl/api/diagrams" -Headers $Auth1
+        if ($r2 -and $r2.StatusCode -eq 200) {
+            $list = @($r2.Content | ConvertFrom-Json)
+            $found = $list | Where-Object { $_.id -eq $DiagramId }
+            if (-not $found) { Pass "Diagram deleted; not in list" }
+            else { Fail "Diagram still appears in list after delete" }
+        } else {
+            Pass "Diagram deleted (204); list check skipped"
+        }
+    } else {
+        Fail "DELETE /api/diagrams/$DiagramId -> $(StatusOf $r): $($r.Content)"
+    }
+} else { Skip "No diagram id" }
+
+} # end -not $SkipDiagrams
 
 # ============================================================================
 # RATE LIMITING (optional)

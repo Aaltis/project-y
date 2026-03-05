@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { apiGet, apiPost, ApiError } from '../../api'
+import { apiGet, apiPost, apiPut, apiDelete, ApiError } from '../../api'
 import DataTable from '../../components/DataTable'
 import ErrorBanner from '../../components/ErrorBanner'
 
@@ -17,9 +17,13 @@ export default function AccountDetail() {
   const [tab, setTab] = useState<'contacts' | 'opportunities'>('contacts')
   const [error, setError] = useState<string | null>(null)
 
-  // Contact form
+  // Contact create form
   const [showContactForm, setShowContactForm] = useState(false)
   const [cName, setCName] = useState(''); const [cEmail, setCEmail] = useState(''); const [cPhone, setCPhone] = useState('')
+
+  // Contact edit form
+  const [editingContactId, setEditingContactId] = useState<string | null>(null)
+  const [ecName, setEcName] = useState(''); const [ecEmail, setEcEmail] = useState(''); const [ecPhone, setEcPhone] = useState('')
 
   // Opportunity form
   const [showOppForm, setShowOppForm] = useState(false)
@@ -50,6 +54,31 @@ export default function AccountDetail() {
       setShowContactForm(false)
       loadAll()
     } catch (e) { setError(e instanceof ApiError ? e.message : 'Failed') }
+  }
+
+  function startEditContact(contact: Contact) {
+    setEditingContactId(contact.id)
+    setEcName(contact.name)
+    setEcEmail(contact.email)
+    setEcPhone(contact.phone)
+  }
+
+  async function saveEditContact(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editingContactId) return
+    try {
+      await apiPut(`/api/accounts/${id}/contacts/${editingContactId}`, { name: ecName, email: ecEmail, phone: ecPhone })
+      setEditingContactId(null)
+      loadAll()
+    } catch (e) { setError(e instanceof ApiError ? e.message : 'Failed to save') }
+  }
+
+  async function deleteContact(contactId: string) {
+    if (!confirm('Delete this contact?')) return
+    try {
+      await apiDelete(`/api/accounts/${id}/contacts/${contactId}`)
+      loadAll()
+    } catch (e) { setError(e instanceof ApiError ? e.message : 'Failed to delete') }
   }
 
   async function createOpportunity(e: React.FormEvent) {
@@ -106,12 +135,36 @@ export default function AccountDetail() {
               </form>
             </div>
           )}
+          {editingContactId && (
+            <div className="card">
+              <form onSubmit={saveEditContact}>
+                <div className="form-row">
+                  <div className="form-group"><label>Name</label><input value={ecName} onChange={(e) => setEcName(e.target.value)} required /></div>
+                  <div className="form-group"><label>Email</label><input type="email" value={ecEmail} onChange={(e) => setEcEmail(e.target.value)} /></div>
+                  <div className="form-group"><label>Phone</label><input value={ecPhone} onChange={(e) => setEcPhone(e.target.value)} /></div>
+                </div>
+                <div className="form-actions">
+                  <button type="submit">Save</button>
+                  <button type="button" className="btn btn-secondary" onClick={() => setEditingContactId(null)}>Cancel</button>
+                </div>
+              </form>
+            </div>
+          )}
           <div className="card">
             <DataTable
               columns={[
                 { key: 'name', label: 'Name' },
                 { key: 'email', label: 'Email' },
                 { key: 'phone', label: 'Phone' },
+                {
+                  key: 'id', label: '',
+                  render: (_, row) => (
+                    <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                      <button className="btn btn-secondary btn-sm" onClick={() => startEditContact(row as unknown as Contact)}>Edit</button>
+                      <button className="btn btn-danger btn-sm" onClick={() => deleteContact(row.id as string)}>Delete</button>
+                    </div>
+                  ),
+                },
               ]}
               rows={contacts as unknown as Record<string, unknown>[]}
               emptyText="No contacts"
